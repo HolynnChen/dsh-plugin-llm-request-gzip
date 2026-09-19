@@ -1406,3 +1406,36 @@ test("answers for a session whose stored ledger cannot be read", async () => {
 		harness.disposeAll();
 	}
 });
+
+test("reports the increment on the wire, and what it is made of", async () => {
+	// A real body carries fields after `messages` — the tool schemas above all —
+	// which no prefix can reach, so they are re-sent every time. The row must say
+	// so, and must not present the uncompressed text as the wire size.
+	const { close, requests, base } = await recordingServer();
+	const harness = createHarness({ providers: { alpha: { enabled: true, minBytes: 0, prewarm: true } }, prewarmPoolSize: 1 });
+	const history = [{ role: "user", content: "y".repeat(20000) }];
+	try {
+		apply(harness.ctx);
+		// Both bodies carry the trailing fields a real adapter sends, in the same
+		// order, so the second is genuinely a continuation of the first.
+		const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object" } } }];
+		await runStep(harness, base, "s1", null, "tool-calls", JSON.stringify({ model: "test-model", messages: history, stream: true, tools }));
+		await runStep(harness, base, "s1", null, "tool-calls", JSON.stringify({
+			model: "test-model",
+			messages: [...history, { role: "assistant", content: "ok" }, { role: "tool", tool_call_id: "c", content: "done" }],
+			stream: true,
+			tools
+		}));
+
+		const measurement = (await readLedger(harness, "s1"))[1];
+		const prewarm = measurement.prewarm;
+		assert.notEqual(prewarm, null, "the step was served from the pool");
+		assert.ok(prewarm.deltaWireBytes > 0, "the wire increment is recorded");
+		assert.ok(prewarm.deltaWireBytes < prewarm.deltaBytes, "and it is smaller than the text it encodes");
+		assert.ok(prewarm.tailBytes > 0, "the part after the messages array is measured");
+		assert.ok(prewarm.tailBytes < prewarm.deltaBytes, "and it is part of the increment, not all of it");
+	} finally {
+		harness.disposeAll();
+		close();
+	}
+});
