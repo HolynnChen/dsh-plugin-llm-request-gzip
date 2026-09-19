@@ -6,7 +6,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { headersMatch, isShapeRejection, messagesPrefixEnd, predictAssistantIncrement, prewarmPrefix } from "../lib/prewarm.js";
+import { ASSISTANT_VARIANTS, headersMatch, isShapeRejection, messagesPrefixEnd, predictAssistantCommonIncrement, predictAssistantIncrement, prewarmPrefix } from "../lib/prewarm.js";
 
 /** One OpenAI-compatible body with a two-message history and trailing fields. */
 const BODY = JSON.stringify({
@@ -111,4 +111,27 @@ test("the framing variants differ exactly where adapters do", () => {
 	// All three place the turn at the same point in the body.
 	assert.equal(reserialized.from, terse.from);
 	assert.equal(terse.from, raw.from);
+});
+
+test("the common prefix is a prefix of every framing, and no longer", () => {
+	const body = JSON.stringify({
+		messages: [
+			{ role: "user", content: "hi" },
+			{ role: "assistant", content: "earlier", tool_calls: [{ id: "a", type: "function", function: { name: "read", arguments: '{"p":1}' } }] }
+		]
+	});
+	const assistant = { text: "Let me look.", toolCalls: [{ id: "b", name: "bash", arguments: '{ "cmd" : "ls" }' }] };
+	const common = predictAssistantCommonIncrement(body, assistant);
+	assert.notEqual(common, undefined);
+
+	// Whatever framing the adapter turns out to use, the pre-sent bytes continue it.
+	for (const variant of ASSISTANT_VARIANTS) {
+		const predicted = predictAssistantIncrement(body, assistant, variant);
+		assert.ok(predicted.appended.startsWith(common.appended), `${variant} must continue the common prefix`);
+	}
+	// And it stops where they diverge rather than guessing past it: the framing
+	// that omits `content` already differs within the common prefix's own length.
+	const terse = predictAssistantIncrement(body, assistant, "terse");
+	assert.ok(common.appended.length < terse.appended.length, "some of the turn is left for the request itself");
+	assert.ok(common.appended.includes('"role":"assistant"'), "but the skeleton goes out early");
 });

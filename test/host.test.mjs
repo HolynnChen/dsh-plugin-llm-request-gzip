@@ -1198,12 +1198,12 @@ test("reports a pre-transmitted request's compressed size and algorithm", async 
 	}
 });
 
-test("learns the adapter's framing instead of betting the pool on a guess", async () => {
+test("pre-sends only what every framing agrees on, so nothing is a guess", async () => {
 	// The model streamed arguments with spaces, and the turn produced no text — so
 	// the adapter's own framing differs from the model's bytes in two ways at once:
 	// it re-serializes the arguments, and it omits `content` on a textless turn.
-	// The pool carries a variant each, so the request itself picks the right one
-	// rather than the whole pool being discarded over a guess.
+	// The pre-sent bytes stop where those framings diverge, which keeps the member
+	// valid whatever the adapter does, instead of discarding a whole pool over it.
 	const streamed = { id: "call_1", type: "function", function: { name: "bash", arguments: '{ "cmd" : "ls" }' } };
 	const { close, requests, base } = await recordingServer({ toolCall: streamed });
 	const harness = createHarness({ providers: { alpha: { prewarm: true } }, prewarmPoolSize: 3 });
@@ -1228,7 +1228,7 @@ test("learns the adapter's framing instead of betting the pool on a guess", asyn
 		await runStep(harness, base, "s1", null, "tool-calls", next);
 
 		const measurements = await readLedger(harness, "s1");
-		assert.notEqual(measurements[1].prewarm, null, "one of the variants matched, so the pool was used");
+		assert.notEqual(measurements[1].prewarm, null, "the pre-sent bytes were a prefix of what the adapter built, so the pool was used");
 		assert.equal(measurements[1].prewarmMiss, null, "and nothing was recorded as a lost bet");
 		// Which member served it depends on which variant matched; what must not
 		// happen is a fresh upload, which is the only request with a declared length.
