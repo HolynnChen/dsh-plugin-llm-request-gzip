@@ -298,9 +298,26 @@ test("the card offers the timing switch and writes it as a top-level field", asy
 	await flush();
 	collapsed.children[0].props.onClick();
 	const body = rerender(card.component, { ctl }).children[1];
-	const timingRow = body.children.find((child) => child !== null && child.type === "label");
+
+	/** Depth-first search for the first element matching `match`. */
+	const find = (node, match) => {
+		if (node === null || typeof node !== "object") return undefined;
+		if (Array.isArray(node)) {
+			for (const child of node) {
+				const hit = find(child, match);
+				if (hit !== undefined) return hit;
+			}
+			return undefined;
+		}
+		if (match(node)) return node;
+		return find(node.children, match);
+	};
+
+	// The switch sits inside the settings grid, so it is found by shape rather
+	// than by position.
+	const timingRow = find(body, (node) => node.type === "label" && find(node.children, (inner) => inner.type === "input") !== undefined);
 	assert.ok(timingRow !== undefined, "the timing preference is offered");
-	const checkbox = timingRow.children[0];
+	const checkbox = find(timingRow.children, (node) => node.type === "input");
 	assert.equal(checkbox.props.checked, false, "it reflects the stored section");
 
 	await checkbox.props.onChange({ target: { checked: true } });
@@ -690,4 +707,43 @@ test("shows a dash, not 0B, when a response was never attributed", async () => {
 	walk(tree);
 	assert.ok(texts.includes("–"), "the response column reports the missing attribution");
 	assert.ok(!texts.includes("0B"), "and never claims a zero-byte response");
+});
+
+test("lays the providers out as one flat grid, four cells per route", async () => {
+	const { exports } = loadBundle();
+	const harness = createClientContext();
+	exports.apply(harness.ctx);
+	const card = harness.registrationFor("settings.plugin.item");
+	const { ctl } = card.options.inject();
+	const collapsed = mount(card.component, { ctl });
+	await flush();
+	collapsed.children[0].props.onClick();
+	const body = rerender(card.component, { ctl }).children[1];
+
+	const collect = (node, predicate, found = []) => {
+		if (node === null || typeof node !== "object") return found;
+		if (Array.isArray(node)) {
+			for (const child of node) collect(child, predicate, found);
+			return found;
+		}
+		if (predicate(node)) found.push(node);
+		collect(node.children, predicate, found);
+		return found;
+	};
+
+	// A grid whose first column is a fixed-width switch cell is a provider grid.
+	const providerGrids = collect(body, (node) => typeof node.props?.style?.gridTemplateColumns === "string" && node.props.style.gridTemplateColumns.startsWith("34px"));
+	assert.equal(providerGrids.length, 2, "a heading row plus one grid for the shared endpoint");
+	const [head, grid] = providerGrids;
+	assert.equal(head.children.length, 4, "four column headings");
+	assert.deepEqual(head.children.map((cell) => cell.children[0]), ["gzip", "提供方", "预传输", "最小体积"]);
+
+	// Four cells per route, all direct children — that is what keeps every column
+	// on one axis no matter how long a provider name is.
+	const routes = (await ctl.read()).routes;
+	assert.equal(grid.children.length, routes.length * 4, "four cells per route");
+	for (let index = 0; index < grid.children.length; index += 4) {
+		const cells = grid.children.slice(index, index + 4);
+		assert.deepEqual(cells.map((cell) => cell.type), ["input", "span", "input", "input"], "switch, identity, switch, threshold");
+	}
 });
