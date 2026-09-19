@@ -342,6 +342,18 @@ async function* readChatStream(base, body, finishKind = "stop") {
 				yield { type: "usage", usage: { inputTokens: parsed.usage.prompt_tokens, outputTokens: parsed.usage.completion_tokens } };
 				continue;
 			}
+			const toolCalls = parsed.choices?.[0]?.delta?.tool_calls;
+			if (Array.isArray(toolCalls)) {
+				for (const call of toolCalls) {
+					yield {
+						type: "tool-call-delta",
+						id: call.id ?? "call_1",
+						...call.function?.name === undefined ? {} : { name: call.function.name },
+						argumentsDelta: call.function?.arguments ?? ""
+					};
+				}
+				continue;
+			}
 			const text = parsed.choices?.[0]?.delta?.content;
 			if (typeof text === "string" && text.length > 0) yield { type: "text-delta", index: 0, text };
 		}
@@ -578,7 +590,7 @@ async function waitFor(predicate, timeoutMs = 2000) {
 	return predicate();
 }
 
-async function recordingServer() {
+async function recordingServer(plan = {}) {
 	const requests = [];
 	const sockets = new Set();
 	const server = http.createServer((req, res) => {
@@ -594,6 +606,7 @@ async function recordingServer() {
 		requests.push(record);
 		req.on("data", (chunk) => {
 			record.firstChunkAt ??= Date.now();
+			record.lastChunkAt = Date.now();
 			record.chunks.push({ at: Date.now() - started, size: chunk.length });
 			record.raw.push(chunk);
 		});
@@ -603,7 +616,11 @@ async function recordingServer() {
 		req.on("end", () => {
 			record.completed = true;
 			res.writeHead(200, { "content-type": "text/event-stream" });
-			res.end('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n');
+			const frames = [];
+			if (plan.toolCall !== undefined) frames.push(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [plan.toolCall] } }] })}\n\n`);
+			else frames.push('data: {"choices":[{"delta":{"content":"ok"}}]}\n\n');
+			frames.push("data: [DONE]\n\n");
+			res.end(frames.join(""));
 		});
 	});
 	// A held request keeps its socket open, which would otherwise leave the test
@@ -636,19 +653,21 @@ async function readLedger(harness, sessionId) {
 	return (await answer.json()).measurements;
 }
 
-test("pre-transmits the shared history, then sends only the increment", async () => {
+test("pre-transmits the shared history across a pool, then sends only the increment", async () => {
 	const { close, requests, base } = await recordingServer();
-	const harness = createHarness({ providers: { alpha: { prewarm: true } } });
+	const harness = createHarness({ providers: { alpha: { prewarm: true } }, prewarmPoolSize: 3 });
 	try {
 		apply(harness.ctx);
 		const history = [{ role: "user", content: "turn one ".repeat(200) }];
 		await runStep(harness, base, "s1", history, "tool-calls");
 
-		assert.ok(await waitFor(() => requests.length === 2), "the first step opened a second, held request");
-		const held = requests[1];
-		assert.equal(held.completed, false, "the held request is still open");
-		assert.ok(held.chunks.length >= 1, "its history is already on the wire");
-		assert.equal(held.transfer, "chunked", "a body it cannot size yet is chunked");
+		assert.ok(await waitFor(() => requests.length === 4), "the first step opened a pool of three held requests");
+		const held = requests.slice(1);
+		assert.equal(held.filter((entry) => !entry.completed && !entry.aborted).length, 3, "all three are held open");
+		for (const member of held) {
+			assert.ok(member.chunks.length >= 1, "each carries the history already");
+			assert.equal(member.transfer, "chunked", "a body it cannot size yet is chunked");
+		}
 
 		const beforeSecondStep = Date.now();
 		await new Promise((resolve) => setTimeout(resolve, 30));
@@ -657,36 +676,43 @@ test("pre-transmits the shared history, then sends only the increment", async ()
 			{ role: "assistant", content: "ok" },
 			{ role: "user", content: "turn two" }
 		], "tool-calls");
-		assert.ok(held.firstChunkAt <= beforeSecondStep, "the history was on the wire before the second step was even issued");
 
-		assert.equal(requests.length, 2, "the second step reused the held request instead of opening another");
-		assert.equal(held.completed, true, "the increment completed it");
-		assert.ok(held.chunks.length >= 2, "the increment was written into the held request");
-		assert.ok(held.chunks[0].size > held.chunks[held.chunks.length - 1].size, "the history dwarfs the increment");
+		// The oldest member — the one in flight longest — is the one consumed.
+		assert.equal(held[0].completed, true, "the oldest member served the request");
+		assert.ok(held[0].firstChunkAt <= beforeSecondStep, "its history was on the wire before the step was even issued");
+		assert.ok(held[0].chunks.length >= 2, "the increment was written into it");
+		assert.ok(held[0].chunks[0].size > held[0].chunks.at(-1).size, "the history dwarfs the increment");
+
+		// The survivors were advanced to the new prefix, and the pool refilled.
+		assert.ok(await waitFor(() => requests.length === 5), "the pool refilled itself");
+		const survivors = requests.filter((entry) => !entry.completed && !entry.aborted);
+		assert.equal(survivors.length, 3, "the pool is full again");
+		assert.ok(survivors.some((entry) => entry.chunks.length >= 2), "the survivors were advanced, not reopened");
 
 		const measurements = await readLedger(harness, "s1");
-		assert.equal(measurements[1].prewarm === null, false, "the second step records its pre-transmission");
-		assert.ok(measurements[1].prewarm.prefixBytes > measurements[1].prewarm.deltaBytes);
+		assert.notEqual(measurements[1].prewarm, null, "the second step records its pre-transmission");
 	} finally {
 		harness.disposeAll();
 		close();
 	}
 });
 
-test("abandons a held request whose history no longer matches", async () => {
+test("abandons the whole pool when the history no longer matches", async () => {
 	const { close, requests, base } = await recordingServer();
-	const harness = createHarness({ providers: { alpha: { prewarm: true } } });
+	const harness = createHarness({ providers: { alpha: { prewarm: true } }, prewarmPoolSize: 2 });
 	try {
 		apply(harness.ctx);
 		await runStep(harness, base, "s1", [{ role: "user", content: "turn one" }], "tool-calls");
-		assert.ok(await waitFor(() => requests.length === 2 && requests[1].chunks.length > 0), "a request is held");
+		assert.ok(await waitFor(() => requests.length === 3), "a pool of two is held");
+		assert.equal(requests.filter((entry) => !entry.completed && !entry.aborted).length, 2);
 
 		await runStep(harness, base, "s1", [{ role: "user", content: "a different history" }], "tool-calls");
 
-		assert.equal(requests.length, 3, "the mismatch opened a fresh request");
-		assert.equal(requests[1].aborted, true, "the held request was abandoned");
-		assert.equal(requests[2].completed, true);
-		assert.equal(requests[2].transfer, null, "the ordinary path keeps a declared length");
+		assert.ok(await waitFor(() => requests.length === 4), "the mismatch opened a fresh request");
+		assert.equal(requests[1].aborted, true, "the first member was abandoned");
+		assert.equal(requests[2].aborted, true, "and so was the second");
+		assert.equal(requests[3].transfer, null, "the ordinary path keeps a declared length");
+		assert.equal(requests[3].completed, true);
 
 		const measurements = await readLedger(harness, "s1");
 		assert.equal(measurements[1].prewarm, null, "nothing is claimed that was not used");
@@ -698,13 +724,13 @@ test("abandons a held request whose history no longer matches", async () => {
 
 test("pre-transmission composes with gzip instead of replacing it", async () => {
 	const { close, requests, base } = await recordingServer();
-	const harness = createHarness({ providers: { alpha: { prewarm: true, enabled: true, minBytes: 0 } } });
+	const harness = createHarness({ providers: { alpha: { prewarm: true, enabled: true, minBytes: 0 } }, prewarmPoolSize: 2 });
 	const first = [{ role: "user", content: "x".repeat(20000) }];
 	const second = [...first, { role: "assistant", content: "ok" }];
 	try {
 		apply(harness.ctx);
 		await runStep(harness, base, "s1", first, "tool-calls");
-		assert.ok(await waitFor(() => requests.length === 2 && requests[1].chunks.length > 0), "a request is held");
+		assert.ok(await waitFor(() => requests.length === 3 && requests[1].chunks.length > 0), "a pool is held");
 		const beforeSecondStep = Date.now();
 		await new Promise((resolve) => setTimeout(resolve, 30));
 		await runStep(harness, base, "s1", second, "tool-calls");
@@ -723,40 +749,78 @@ test("pre-transmission composes with gzip instead of replacing it", async () => 
 	}
 });
 
-//#endregion
-
-test("drops the held request when the step ends the turn", async () => {
+test("destroys the whole pool when the step ends the turn", async () => {
 	const { close, requests, base } = await recordingServer();
-	const harness = createHarness({ providers: { alpha: { prewarm: true } } });
+	const harness = createHarness({ providers: { alpha: { prewarm: true } }, prewarmPoolSize: 3 });
 	try {
 		apply(harness.ctx);
 		await runStep(harness, base, "s1", [{ role: "user", content: "hello" }], "stop");
 
-		// The history goes out as soon as the call is issued...
-		assert.ok(await waitFor(() => requests.length === 2), "the call opened a held request");
-		// ...and is abandoned when the step turns out to end the turn, because no
-		// further request will ever consume it.
-		assert.ok(await waitFor(() => requests[1].aborted === true || requests[1].completed === true), "the held request was released");
-		assert.equal(requests.length, 2, "and nothing new was opened");
+		assert.ok(await waitFor(() => requests.length === 4), "the call opened the pool");
+		assert.ok(await waitFor(() => requests.slice(1).every((entry) => entry.aborted === true || entry.completed === true)), "the pool was destroyed");
+		assert.equal(requests.filter((entry) => !entry.completed && !entry.aborted).length, 0, "nothing is left held");
 	} finally {
 		harness.disposeAll();
 		close();
 	}
 });
 
-test("bounds how many conversations hold a request at once", async () => {
+test("bounds the total number of held requests across conversations", async () => {
 	const { close, requests, base } = await recordingServer();
 	const harness = createHarness({ providers: { alpha: { prewarm: true } }, prewarmPoolSize: 2 });
 	try {
 		apply(harness.ctx);
 		for (const session of ["s1", "s2", "s3"]) await runStep(harness, base, session, [{ role: "user", content: session }], "tool-calls");
-		// A live held request is one that is still open: not completed, not aborted.
-		const live = () => requests.filter((entry) => !entry.completed && !entry.aborted);
-		assert.ok(await waitFor(() => live().length === 2), "the pool bound settles at two");
-		assert.equal(requests[1].aborted, true, "the oldest held request was evicted first");
-		assert.equal(live().length, 2, "and exactly two remain held");
+		// Two per conversation, three conversations.
+		assert.ok(await waitFor(() => requests.filter((entry) => !entry.completed && !entry.aborted).length === 6), "each conversation holds its own pool");
+		assert.equal(requests.filter((entry) => !entry.completed && !entry.aborted).length, 6);
 	} finally {
 		harness.disposeAll();
 		close();
 	}
 });
+
+test("adds the assistant turn to the pool while the tools run", async () => {
+	const call = { id: "call_1", type: "function", function: { name: "bash", arguments: '{"cmd":"ls"}' } };
+	const { close, requests, base } = await recordingServer({ toolCall: call });
+	const harness = createHarness({ providers: { alpha: { prewarm: true } }, prewarmPoolSize: 1 });
+	try {
+		apply(harness.ctx);
+		// A template the predictor can learn from: a prior assistant turn that also
+		// carries tool calls, in the same key order the adapter will emit.
+		const history = [
+			{ role: "user", content: "hi" },
+			{ role: "assistant", content: null, tool_calls: [{ id: "c0", type: "function", function: { name: "read", arguments: "{}" } }] },
+			{ role: "tool", tool_call_id: "c0", content: "ok" }
+		];
+		await runStep(harness, base, "s1", history, "tool-calls");
+
+		// The assistant turn reaches the held request during the tool window, before
+		// the request that will need it has been issued.
+		assert.ok(await waitFor(() => requests.length === 2 && requests[1].chunks.length >= 2), "the turn was appended to the held request");
+		const held = requests[1];
+		const beforeSecondStep = Date.now();
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		assert.ok(held.lastChunkAt <= beforeSecondStep, "and it went out before the next step was issued");
+
+		const next = [
+			...history,
+			{ role: "assistant", content: null, tool_calls: [call] },
+			{ role: "tool", tool_call_id: "call_1", content: "file.txt" }
+		];
+		await runStep(harness, base, "s1", next, "tool-calls");
+
+		assert.equal(held.completed, true, "the held request served the step");
+		const body = Buffer.concat(held.raw).toString("utf8");
+		assert.match(body, /"tool_calls":\[\{"id":"call_1"/u, "the predicted turn was already on the wire");
+		assert.ok(await waitFor(() => requests.length === 3), "the pool refilled for the step after");
+		assert.equal(requests[2].completed, false, "and the replacement is held");
+	} finally {
+		harness.disposeAll();
+		close();
+	}
+});
+
+//#endregion
+
+

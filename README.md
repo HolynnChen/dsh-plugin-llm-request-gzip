@@ -155,27 +155,20 @@ llm-request-gzip:
 
 ### Pre-transmission (opt-in, per provider)
 
-A multi-turn request re-sends its entire history every step. With **预传输 / pre-transmission** enabled for a provider, the plugin opens the *next* request the moment a model call is issued and writes that call's own message history into it, so the upload overlaps the model call itself and the tools that follow it. When the next request is actually issued, only the increment — the assistant turn and the tool results — still has to be written.
+A multi-turn request re-sends its entire history every step. With **预传输 / pre-transmission** enabled for a provider, the plugin keeps a **pool of held requests** per conversation and puts the shared history on the wire before the request that needs it even exists — because a long history does not reach the far end instantly, and the longer it is, the longer a relay chain takes to carry it.
 
-- **Start** — as soon as a model call goes out. The history it carries is exactly the history the next request will repeat, so it is known then, with no guessing about what the adapter will serialize later.
-- **Keep** — through that call and the tools it asks for.
-- **Drop** — the moment a step ends the turn (`stop`, `max-tokens`, an error, an interruption) rather than `tool-calls`, because no further request will consume it; also on the hold timeout, when a newer call for the same conversation replaces it, and when the pool bound below is exceeded.
-- **Bound** — `prewarmPoolSize` (default `3`) is how many conversations may hold one at once. There is only ever one possible successor per conversation, so this bounds concurrent held requests; it is not a set of alternatives to choose from.
+Each conversation's pool holds `prewarmPoolSize` members (default `3`). Members are opened at staggered moments and **advanced as content becomes known**, so the one that gets consumed has already been in flight for several steps rather than for one:
 
-It is off by default, and it is worth being clear about why it is a measured experiment rather than a free win:
+- **Open** — a model call goes out, so its own history is known; every member is advanced to it, and the pool is refilled. The bytes are slices of the request that was just captured — never reconstructed.
+- **Fill** — the step ends asking for tools, so the assistant turn is added to every member while the tools run. Those bytes *are* a prediction of the adapter's serialization, so it is guarded: the captured body must round-trip through `JSON.parse`/`JSON.stringify` unchanged, and the previous assistant turn must use only fields this can reason about, and have the same shape (with or without tool calls). If the prediction is wrong it is caught byte for byte when the next request claims a member — and the fill then switches off for that provider, leaving the pool advancing on captured bytes alone.
+- **Consume** — the next request claims the **oldest** member whose bytes it continues and whose headers still match; the survivors are advanced and the pool refilled.
+- **Destroy** — a step that ends the turn (`stop`, `max-tokens`, an error, an interruption) rather than `tool-calls` has no successor, so the whole pool is released. So is the pool of a conversation whose history no longer continues it, and every member at the hold timeout.
 
-- **The saving is bounded by the upload it removes.** The 发送 column is that upload; on this deployment it is single-digit to low-hundreds of milliseconds against a request measured in tens of seconds. The feature moves it off the critical path; it cannot move anything else, because a gateway must still receive the complete body before inference starts.
-- **A held request occupies a gateway slot** for the whole tool run. Gateways with short body timeouts will drop it — harmlessly, but then nothing was gained for that step.
-- **It produces a chunked body**, which some proxies refuse.
+A held member carries a chunked body, because its length cannot be known before the increment is. If an endpoint answers badly — or refuses a chunked body — pre-transmission switches off for that endpoint, and a shape rejection (411/415/501) is resent as an ordinary request.
 
-Because of that, every attempt is guarded and observable:
+Rows that used it carry a **预热** chip; hover it for the pre-sent bytes, the increment, and how long the member was held. That last number is the lead time actually won, and it is the honest way to tell whether a longer pool is worth anything on a given link.
 
-- The held request is claimed **only** if the arriving body literally continues the pre-sent bytes *and* every header still matches. Any difference abandons it and the request goes out normally.
-- If the endpoint answers badly — or refuses a chunked body — pre-transmission is switched off for that endpoint for the life of the process, and a shape rejection (411/415/501) is resent as an ordinary request.
-- Any failure inside the mechanism falls back to a normal request.
-- Rows that used it carry a **预热** chip; hover it for the pre-sent bytes, the increment, and how long the request was held.
-
-gzip and pre-transmission compose: the split keeps **one** deflate stream open, so the two parts decompress as a single body and the compression is kept rather than traded away.
+gzip and pre-transmission compose: the split keeps **one** deflate stream open across every part, so the parts decompress as a single body and the compression is kept rather than traded away.
 
 ### Safety notes
 

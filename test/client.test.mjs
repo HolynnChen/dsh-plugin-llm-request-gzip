@@ -157,7 +157,7 @@ function loadBundle() {
 }
 
 /** A fake client context recording slot registrations, plus a controllable settings scope. */
-function createClientContext(sectionValue = { providers: { beta: { enabled: true, minBytes: 4096 } }, timing: true }) {
+function createClientContext(sectionValue = { providers: { beta: { enabled: true, minBytes: 4096, prewarm: true } }, timing: true, prewarmPoolSize: 3 }) {
 	const harness = { registrations: [] };
 	const listeners = new Set();
 	let snapshot = { status: "ready", value: sectionValue, writable: true, revision: 7 };
@@ -326,10 +326,21 @@ test("joins the provider directory with the stored policy and both profile shape
 
 	const snapshot = await ctl.read();
 	assert.equal(snapshot.revision, 7);
+	assert.equal(snapshot.prewarmPoolSize, 3, "the pool size is read for the panel");
 	assert.deepEqual(snapshot.routes, [
 		{ id: "alpha", name: "Alpha", endpoint: SITE, enabled: false, minBytes: 1024, prewarm: false },
-		{ id: "beta", name: "Beta", endpoint: SITE, enabled: true, minBytes: 4096, prewarm: false }
+		{ id: "beta", name: "Beta", endpoint: SITE, enabled: true, minBytes: 4096, prewarm: true }
 	]);
+});
+
+test("writes the pool size as a top-level field", async () => {
+	const { exports } = loadBundle();
+	const harness = createClientContext();
+	exports.apply(harness.ctx);
+	const { ctl } = harness.registrationFor("settings.plugin.item").options.inject();
+
+	await ctl.write("prewarmPoolSize", { value: 5 }, 7);
+	assert.deepEqual(harness.ctx.writes, [{ ns: NS, ops: [{ op: "set", path: ["prewarmPoolSize"], value: 5 }], revision: 7 }]);
 });
 
 test("writes path-addressed provider ops with the revision it read", async () => {
