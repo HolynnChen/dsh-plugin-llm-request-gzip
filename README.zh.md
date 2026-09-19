@@ -165,7 +165,7 @@ llm-request-gzip:
   timing: true
 ```
 
-`encoding` 为 `auto`（**优先 brotli**）或 `gzip`，可在整节设置，也可按提供方单独设置。
+`encoding` 为 `auto`（**优先 brotli**）或 `gzip`，可在整节设置，也可按提供方单独设置。brotli 使用 **quality 9**：实测在相近耗时下比 gzip 小约 5~15%。**刻意不用** brotli 自己的默认值 quality 11——它每 MB 要花约一秒的**同步** CPU（会阻塞事件循环），只换来几个百分点。
 
 ### 预传输（按提供方开关，默认关闭）
 

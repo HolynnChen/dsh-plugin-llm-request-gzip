@@ -16,6 +16,7 @@
 import assert from "node:assert/strict";
 import http from "node:http";
 import { brotliDecompressSync, gunzipSync, gzipSync } from "node:zlib";
+import { randomBytes } from "node:crypto";
 import test from "node:test";
 import { apply, Config, NS } from "../lib/index.js";
 
@@ -145,26 +146,27 @@ function bodyOf(call) {
  * @param provider - the provider route being streamed.
  * @param request - the fetch call the fake adapter performs.
  */
-async function streamWithFetch(listeners, provider, request) {
+async function streamWithFetch(listeners, provider, request, sessionId) {
 	const waterfall = listeners.get("llm/stream")[0];
 	const inner = (async function* adapter() {
 		await new Promise((resolve) => setTimeout(resolve, 1));
 		await request();
 		yield { type: "text-delta", index: 0, text: "ok" };
 	})();
-	for await (const _chunk of waterfall({ provider }, () => inner)) {
+	const call = sessionId === undefined ? { provider } : { provider, sessionId };
+	for await (const _chunk of waterfall(call, () => inner)) {
 		// Drain the stream exactly as the LLM service would.
 	}
 }
 
 /** A chat-completions-shaped call, large enough to clear the default threshold. */
-function chatRequest(url) {
+function chatRequest(url, body) {
 	return {
 		input: `${url}/chat/completions`,
 		init: {
 			method: "POST",
 			headers: { authorization: "Bearer secret", "content-type": "application/json" },
-			body: JSON.stringify({ messages: [{ role: "user", content: "x".repeat(4096) }] })
+			body: body ?? JSON.stringify({ messages: [{ role: "user", content: "x".repeat(4096) }] })
 		}
 	};
 }
@@ -1039,5 +1041,56 @@ test("retries as gzip when an endpoint refuses brotli, then remembers it", async
 	} finally {
 		transport.restore();
 		harness.disposeAll();
+	}
+});
+
+test("keeps brotli off its slow quality curve, and counts that time as preparation", async () => {
+	// Brotli's own default is quality 11: about a second of synchronous CPU per
+	// megabyte, for a few percent over quality 9. A body this size makes the
+	// difference unmistakable, and the preparation phase must show the cost
+	// rather than charging it to the upload.
+	const body = JSON.stringify({
+		messages: Array.from({ length: 4000 }, (_, index) => ({
+			role: index % 2 === 0 ? "user" : "assistant",
+			content: randomBytes(48).toString("hex")
+		}))
+	});
+	const harness = createHarness({ providers: { beta: { enabled: true, minBytes: 0 } } });
+	const transport = spyFetch();
+	try {
+		apply(harness.ctx);
+		const call = chatRequest(SHARED_ENDPOINT, body);
+		await streamWithFetch(harness.listeners, "beta", () => globalThis.fetch(call.input, call.init), "s1");
+
+		const [measurement] = await readLedger(harness, "s1");
+		assert.equal(measurement.encoding, "br", "brotli is the algorithm in use");
+		assert.ok(measurement.sentBytes < measurement.requestBytes, "and it compressed the body");
+		assert.ok(measurement.prepareMs > 0, "the compression happens inside the preparation phase");
+		assert.ok(measurement.prepareMs < 400, `preparation took ${measurement.prepareMs}ms, so the quality is not capped`);
+	} finally {
+		transport.restore();
+		harness.disposeAll();
+	}
+});
+
+test("records which algorithm compressed each request", async () => {
+	const gzipHarness = createHarness({ encoding: "gzip", providers: { beta: { enabled: true } } });
+	const brHarness = createHarness({ providers: { beta: { enabled: true } } });
+	const transport = spyFetch();
+	try {
+		apply(gzipHarness.ctx);
+		const first = chatRequest(SHARED_ENDPOINT);
+		await streamWithFetch(gzipHarness.listeners, "beta", () => globalThis.fetch(first.input, first.init), "s1");
+		assert.equal((await readLedger(gzipHarness, "s1"))[0].encoding, "gzip");
+		gzipHarness.disposeAll();
+
+		apply(brHarness.ctx);
+		const second = chatRequest(SHARED_ENDPOINT);
+		await streamWithFetch(brHarness.listeners, "beta", () => globalThis.fetch(second.input, second.init), "s1");
+		assert.equal((await readLedger(brHarness, "s1"))[0].encoding, "br");
+	} finally {
+		transport.restore();
+		gzipHarness.disposeAll();
+		brHarness.disposeAll();
 	}
 });
