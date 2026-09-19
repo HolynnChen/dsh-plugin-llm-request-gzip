@@ -483,6 +483,9 @@ function measurement() {
 		inputTokens: 10,
 		outputTokens: 500,
 		tokensPerSecond: 250,
+		cacheReadTokens: 900,
+		cacheWriteTokens: 0,
+		cacheHitPercent: 90,
 		requestBytes: 1400000,
 		sentBytes: 400000,
 		responseBytes: 12345,
@@ -519,7 +522,8 @@ test("renders the timing columns, the sizes and the compression delta", async ()
 	};
 	walk(tree);
 
-	assert.deepEqual(labels, ["时间", "提供方 / 模型", "发送", "服务端", "首 token", "生成", "tok/s", "请求体", "响应体", "总计"]);
+	assert.deepEqual(labels, ["时间", "提供方 / 模型", "发送", "服务端", "首 token", "生成", "tok/s", "缓存", "请求体", "响应体", "总计"]);
+	assert.ok(texts.includes("90.0%"), "the prefix-cache hit rate is shown per request");
 	assert.ok(texts.includes("1.34MB→390.6KB"), `expected the compression delta, got ${JSON.stringify(texts.filter((t) => typeof t === "string"))}`);
 	assert.ok(texts.includes("12.1KB"), "expected the response size");
 	assert.ok(texts.includes("900ms"), "expected the server phase");
@@ -636,7 +640,7 @@ test("fills the panel by proportional column shares instead of by content", asyn
 
 	const [colgroup] = collect(tree, "colgroup");
 	const shares = colgroup.children.map((col) => Number.parseFloat(col.props.style.width));
-	assert.equal(shares.length, 10, "one share per column");
+	assert.equal(shares.length, 11, "one share per column");
 	assert.equal(Math.round(shares.reduce((sum, share) => sum + share, 0)), 100, "the shares exhaust the width");
 	assert.ok(Math.max(...shares) <= 30, "no column is handed a runaway share");
 });

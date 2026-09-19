@@ -41,6 +41,7 @@ stream begins ──▶ fetch() ──────▶ body sent ─────�
 | 首 token / TTFT | Body sent → **first token**. |
 | 生成 / generation | First token → stream end. |
 | tok/s | Output tokens ÷ the generation window. |
+| 缓存 / cache | Share of the prompt the provider served from its prefix cache (cached input tokens ÷ input tokens), with the raw counts on hover. |
 | 请求体 / request body | `before → after` when the body was gzipped, otherwise the single serialized size. |
 | 响应体 / response body | Bytes actually received **on the wire**, plus the response's `content-encoding` when it declares one — so a gzip-encoded reply is labelled rather than merely looking small. |
 | 总计 / total | Fetch call → stream end. |
@@ -50,6 +51,12 @@ Every column header explains itself on hover, and hovering a row shows what does
 The table fills the panel by fixed column shares — the provider/model text takes the largest one and the numeric columns take what their values need — so it neither leaves the panel half empty nor stretches whichever value happens to be longest.
 
 The conversation column's own width handles are shell chrome, rendered for whichever view is active, so a view cannot un-render them — but they carry a stable `data-width-handle` attribute. While this view is mounted it installs one stylesheet rule, `[data-width-handle]{display:none}`, and removes it again on unmount: the transcript cannot be resized by a stray drag over the table, and every other view keeps the handle. The panel also asks the shell's scroller to reveal its top on open, because arriving from a live transcript would otherwise drop it at the bottom. The rows scroll inside the panel with the header pinned to the top of that box. The panel measures the space actually left below it — its own top, the shell's published `--dsh-composer-height`, and a small margin — and bounds itself to that, so it fits one screen and the shell's own scroller never appears alongside it. It has to measure rather than rely on `height: 100%`, because the shell gives the view area an `auto` height while a session is active. Both behaviours live in the two mount effects at the top of `TimingView` in `lib/client.js`; remove them and the panel behaves like every other view again.
+
+### Prefix reuse
+
+Prefill dominates a long-conversation request, and the shared prefix is the part worth not recomputing. That reuse is a **server-side** mechanism — providers hash the prompt prefix and reuse the computed KV cache — so the client's only lever is keeping the prefix byte-stable across turns, which DSH already does. The cache column is how you see whether it is working: it reports the provider's own accounting, so a high share means the prefill was largely skipped.
+
+It is worth knowing why the obvious client-side idea — opening a request with the known prefix and appending the rest once tools finish — cannot help. An OpenAI-compatible `/chat/completions` body is one JSON document: the endpoint buffers it and starts inference only once the body is complete, so a prefix alone starts no work, and a dispatched request cannot be appended to. The speculative request would either be abandoned (having done nothing) or held open until it times out. Let the server do it, and keep the prefix stable.
 
 ### Why this differs from the Trajectory's TTFT
 

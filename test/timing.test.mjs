@@ -95,6 +95,30 @@ test("records each phase once", () => {
 	assert.equal(store.snapshot("s1")[0].sendMs, 10);
 });
 
+test("reports the provider's prefix-cache accounting", () => {
+	const clock = fixedClock();
+	const store = createTimingStore({ now: clock.now, wallNow: clock.wallNow });
+	const record = store.begin({ provider: "sg", sessionId: "s1" });
+	store.noteFetch(record, "https://gateway.example/v1/chat/completions", BODY_BYTES);
+	store.observeChunk(record, { type: "usage", usage: { inputTokens: 1000, outputTokens: 100, cacheReadTokens: 900, cacheWriteTokens: 0 } }, clock.now());
+	store.finish(record, clock.now());
+
+	const [measured] = store.snapshot("s1");
+	assert.equal(measured.cacheReadTokens, 900);
+	assert.equal(measured.cacheWriteTokens, 0);
+	assert.equal(measured.cacheHitPercent, 90, "900 of 1000 input tokens came from the prefix cache");
+});
+
+test("leaves the cache hit rate null when the provider reports no cache usage", () => {
+	const clock = fixedClock();
+	const store = createTimingStore({ now: clock.now, wallNow: clock.wallNow });
+	const record = store.begin({ provider: "sg", sessionId: "s1" });
+	store.noteFetch(record, "https://gateway.example/v1/chat/completions", BODY_BYTES);
+	store.observeChunk(record, { type: "usage", usage: { inputTokens: 500, outputTokens: 10 } }, clock.now());
+	store.finish(record, clock.now());
+	assert.equal(store.snapshot("s1")[0].cacheHitPercent, null, "absent, not a misleading zero");
+});
+
 test("records the response encoding only when one was declared", () => {
 	const clock = fixedClock();
 	const encoded = opened(clock);
