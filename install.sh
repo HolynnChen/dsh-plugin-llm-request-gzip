@@ -52,7 +52,8 @@ else
 	say "==> registering $PLUGIN_ID in $PATCH_FILE"
 	{
 		printf '\n'
-		printf '# Per-provider gzip request-body compression for model calls (Settings > Plugins).\n'
+		printf '# Model request acceleration: request-body compression, pre-transmission of the\n'
+		printf '# shared history, and a request-timing breakdown (Settings > Plugins).\n'
 		printf -- '- insert:\n'
 		printf '    - id: %s\n' "$PLUGIN_ID"
 		printf "      name: '%s'\n" "$ROW_NAME"
@@ -63,5 +64,8 @@ say ""
 say "Installed into the \"$DSH_PROFILE\" profile."
 say "  1. Reload your browser tab - the settings card arrives with the page's module graph."
 say "  2. Open Settings > Plugins > Configuration and enable the providers you want."
-say "Every provider starts disabled; confirm your gateway accepts content-encoding: gzip"
-say "before enabling it for the provider serving your current session."
+say "Every provider starts disabled; confirm your gateway accepts content-encoding: br or"
+say "gzip before enabling compression for the provider serving your current session."
+say ""
+say "Re-running this script updates an existing install: it fast-forwards the checkout and"
+say "leaves your settings alone. The settings card shows the version and can update too."
