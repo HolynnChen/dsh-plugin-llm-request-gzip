@@ -71,7 +71,7 @@ test("decomposes one request into every phase", () => {
 	assert.equal(measurement.requestBytes, BODY_BYTES);
 	assert.equal(measurement.sentBytes, BODY_BYTES, "uncompressed by default");
 	assert.equal(measurement.compressed, false);
-	assert.equal(measurement.responseBytes, 0);
+	assert.equal(measurement.responseBytes, null, "no response chunk arrived in this fixture");
 });
 
 test("claims only the request it measured", () => {
@@ -147,6 +147,10 @@ test("accumulates response bytes as they arrive", () => {
 	store.noteResponseBytes(record, Number.NaN);
 	store.finish(record, clock.now());
 	assert.equal(store.snapshot("s1")[0].responseBytes, 350);
+
+	const silent = opened(clock);
+	silent.store.finish(silent.record, clock.now());
+	assert.equal(silent.store.snapshot("s1")[0].responseBytes, null, "no chunk attributed is not the same as zero bytes");
 });
 
 test("reports a compressed request only when the body really shrank", () => {

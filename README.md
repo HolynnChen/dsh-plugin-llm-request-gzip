@@ -38,12 +38,12 @@ stream begins ──▶ fetch() ──────▶ body sent ─────�
 | 提供方 / 模型 | Provider route, model, purpose (compaction or session title), a `gzip` chip when the body was really compressed, and a running or failed badge. |
 | 发送 / send | The request being issued → **the body fully sent**. |
 | 服务端 / server | Body sent → response headers received. |
-| 首 token / TTFT | Body sent → **first token**. |
+| 首token | Wait until the first token: from the request being issued, or — for a pre-transmitted row — from the member being claimed. The server's own think time (from the body being sent) is in the row tooltip. |
 | 生成 / generation | First token → stream end. |
 | tok/s | Output tokens ÷ the generation window. |
 | 缓存 / cache | Share of the prompt the provider served from its prefix cache. `inputTokens` counts *uncached* input only, so the prompt is cached + uncached and the rate is cached ÷ (cached + uncached); the raw counts are on hover. |
 | 请求体 / request body | `before → after` when the body was gzipped, otherwise the single serialized size. |
-| 响应体 / response body | Bytes actually received **on the wire**, plus the response's `content-encoding` when it declares one — so a gzip-encoded reply is labelled rather than merely looking small. |
+| 响应体 / response body | Bytes actually received **on the wire**, plus the response's `content-encoding` when it declares one — so a gzip-encoded reply is labelled rather than merely looking small. A `–` means no chunk was attributed at all, which is a wiring fault to see rather than an empty reply. |
 | 总计 / total | Fetch call → stream end. |
 
 Every column header explains itself on hover, and hovering a row shows what does not fit: the preparation time (stream start → request issued), the input/output token counts, and the response size with its encoding.
