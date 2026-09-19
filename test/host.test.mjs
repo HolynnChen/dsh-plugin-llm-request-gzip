@@ -78,9 +78,12 @@ function createHarness(initialSection = {}, options = {}) {
 			if (name === "llm") return { listConfigurableProviders: () => DIRECTORY };
 			// A live agent whose inbox reports queued work, when a test asks for one.
 			if (name === "agents") {
-				return options.pendingInput === true
-					? { get: () => ({ inbox: { hasPending: true } }) }
-					: undefined;
+				if (options.pendingInput === undefined) return undefined;
+				return {
+					get: (sessionId) => options.pendingInput === true || options.pendingInput.includes(sessionId)
+						? { inbox: { hasPending: true } }
+						: undefined
+				};
 			}
 			return undefined;
 		},
@@ -597,6 +600,7 @@ async function waitFor(predicate, timeoutMs = 2000) {
 }
 
 async function recordingServer(plan = {}) {
+	// `failAt` makes one specific request answer `status`; the rest behave.
 	const requests = [];
 	const sockets = new Set();
 	const server = http.createServer((req, res) => {
@@ -621,6 +625,11 @@ async function recordingServer(plan = {}) {
 		});
 		req.on("end", () => {
 			record.completed = true;
+			if (plan.failAt !== undefined && requests.length === plan.failAt) {
+				res.writeHead(plan.status ?? 503, { "content-type": "text/plain" });
+				res.end("nope");
+				return;
+			}
 			res.writeHead(200, { "content-type": "text/event-stream" });
 			const frames = [];
 			if (plan.toolCall !== undefined) frames.push(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [plan.toolCall] } }] })}\n\n`);
@@ -724,7 +733,8 @@ test("abandons the whole pool when the history no longer matches", async () => {
 
 		await runStep(harness, base, "s1", [{ role: "user", content: "a different history" }], "tool-calls");
 
-		assert.ok(await waitFor(() => requests.length === 4), "the mismatch opened a fresh request");
+		// The ordinary request, then a pool rebuilt from the captured prefix.
+		assert.ok(await waitFor(() => requests.length === 6), "the mismatch fell back and re-opened a pool");
 		assert.equal(requests[1].aborted, true, "the first member was abandoned");
 		assert.equal(requests[2].aborted, true, "and so was the second");
 		assert.equal(requests[3].transfer, null, "the ordinary path keeps a declared length");
@@ -884,6 +894,104 @@ test("keeps the pool across a turn boundary while input is queued", async () => 
 		await runStep(harness, base, "s1", [{ role: "user", content: "hi" }, { role: "assistant", content: "hello" }, { role: "user", content: "next" }], "stop");
 		const measurements = await readLedger(harness, "s1");
 		assert.notEqual(measurements[1].prewarm, null, "the queued turn reused the pool");
+	} finally {
+		harness.disposeAll();
+		close();
+	}
+});
+
+test("keeps a separate pool for every agent, even with identical histories", async () => {
+	const { close, requests, base } = await recordingServer();
+	const harness = createHarness({ providers: { alpha: { prewarm: true } }, prewarmPoolSize: 1 });
+	const held = () => requests.filter((entry) => !entry.completed && !entry.aborted);
+	try {
+		apply(harness.ctx);
+		// A subagent is a separate agent with its own session, so these two are as
+		// separate as any parent and child. Identical histories are the hard case:
+		// a shared key would let the child consume the parent's held request,
+		// because its bytes match perfectly.
+		const history = [{ role: "user", content: "same words" }];
+		await runStep(harness, base, "session-parent", history, "tool-calls");
+		assert.ok(await waitFor(() => held().length === 1), "the parent holds one request");
+		const parentMember = held()[0];
+
+		await runStep(harness, base, "session-child", history, "tool-calls");
+		assert.ok(await waitFor(() => held().length === 2), "the child opened its own instead");
+		assert.equal(parentMember.completed, false, "the parent's request was never consumed by the child");
+		assert.equal(parentMember.aborted, false, "and never abandoned either");
+
+		// Each continues from its own pool.
+		await runStep(harness, base, "session-child", [...history, { role: "assistant", content: "ok" }], "tool-calls");
+		assert.equal(parentMember.completed, false, "the child still did not touch the parent's request");
+		const childRows = await readLedger(harness, "session-child");
+		assert.notEqual(childRows[1].prewarm, null, "the child used its own pool");
+	} finally {
+		harness.disposeAll();
+		close();
+	}
+});
+
+test("reads queued input from the agent's own session, not the whole tree", async () => {
+	const { close, requests, base } = await recordingServer();
+	// Only the parent has something queued; the child is finishing its last turn.
+	const harness = createHarness({ providers: { alpha: { prewarm: true } }, prewarmPoolSize: 1 }, { pendingInput: ["session-parent"] });
+	const held = () => requests.filter((entry) => !entry.completed && !entry.aborted);
+	try {
+		apply(harness.ctx);
+		await runStep(harness, base, "session-parent", [{ role: "user", content: "parent" }], "stop");
+		assert.ok(await waitFor(() => held().length === 1), "the parent's pool survives its turn boundary");
+
+		const parentMember = held()[0];
+		await runStep(harness, base, "session-child", [{ role: "user", content: "child" }], "stop");
+		// The child has nothing queued, so its pool is released at its turn
+		// boundary — and the parent's, which does, is left untouched.
+		assert.ok(await waitFor(() => held().length === 1), "only the child's pool was released");
+		assert.equal(held()[0], parentMember, "the survivor is the parent's own request");
+	} finally {
+		harness.disposeAll();
+		close();
+	}
+});
+
+test("does not give up on an endpoint for one transient failure", async () => {
+	// The held request — the second one — answers 503. A transient failure must
+	// not switch pre-transmission off for the endpoint.
+	const { close, requests, base } = await recordingServer({ failAt: 2, status: 503 });
+	const harness = createHarness({ providers: { alpha: { prewarm: true } }, prewarmPoolSize: 1 });
+	const held = () => requests.filter((entry) => !entry.completed && !entry.aborted);
+	const history = [{ role: "user", content: "one" }];
+	try {
+		apply(harness.ctx);
+		await runStep(harness, base, "s1", history, "tool-calls");
+		assert.ok(await waitFor(() => held().length === 1), "a request is held");
+		await runStep(harness, base, "s1", [...history, { role: "assistant", content: "ok" }], "tool-calls");
+
+		await runStep(harness, base, "s1", [...history, { role: "assistant", content: "ok" }, { role: "assistant", content: "more" }], "tool-calls");
+		assert.ok(await waitFor(() => held().length >= 1), "an endpoint that answered 503 once is still pre-transmitted to");
+	} finally {
+		harness.disposeAll();
+		close();
+	}
+});
+
+test("gives up on an endpoint that refuses a chunked body", async () => {
+	// 415 is about the body shape, so retrying pre-transmission cannot help.
+	const { close, requests, base } = await recordingServer({ failAt: 2, status: 415 });
+	const harness = createHarness({ providers: { alpha: { prewarm: true } }, prewarmPoolSize: 1 });
+	const held = () => requests.filter((entry) => !entry.completed && !entry.aborted);
+	const history = [{ role: "user", content: "one" }];
+	try {
+		apply(harness.ctx);
+		await runStep(harness, base, "s1", history, "tool-calls");
+		assert.ok(await waitFor(() => held().length === 1), "a request is held");
+
+		// Claimed, refused, and re-sent as an ordinary request.
+		await runStep(harness, base, "s1", [...history, { role: "assistant", content: "ok" }], "tool-calls");
+		assert.ok(await waitFor(() => requests.some((entry) => entry.transfer === null && entry.completed)), "the refused request was re-sent normally");
+
+		await runStep(harness, base, "s1", [...history, { role: "assistant", content: "ok" }, { role: "assistant", content: "more" }], "tool-calls");
+		await new Promise((resolve) => setTimeout(resolve, 40));
+		assert.equal(held().length, 0, "and no further request is held for that endpoint");
 	} finally {
 		harness.disposeAll();
 		close();
