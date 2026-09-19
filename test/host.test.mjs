@@ -902,17 +902,24 @@ function fakeStorage(seed = {}) {
 	return {
 		table,
 		domain: {
+			// Mirrors the real `Domain` handle: tables are resolved by name through
+			// `table()`, which is the whole reason this fake exists — modelling the
+			// assumption instead of the contract is how the first version of the
+			// ledger passed its tests while never writing anything.
 			async open() {
 				return {
-					sessions: {
-						get: (key) => table.get(key),
-						put: async (key, value) => {
-							table.set(key, value);
-						},
-						delete: async (key) => table.delete(key),
-						get size() {
-							return table.size;
-						}
+					table(name) {
+						assert.equal(name, "sessions");
+						return {
+							get: (key) => table.get(key),
+							put: async (key, value) => {
+								table.set(key, value);
+							},
+							delete: async (key) => table.delete(key),
+							get size() {
+								return table.size;
+							}
+						};
 					},
 					close: async () => {}
 				};
