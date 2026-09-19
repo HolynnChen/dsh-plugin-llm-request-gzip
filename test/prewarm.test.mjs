@@ -6,7 +6,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { headersMatch, isShapeRejection, messagesPrefixEnd, prewarmPrefix } from "../lib/prewarm.js";
+import { headersMatch, isShapeRejection, messagesPrefixEnd, moveMessagesLast, prewarmPrefix } from "../lib/prewarm.js";
 
 /** One OpenAI-compatible body with a two-message history and trailing fields. */
 const BODY = JSON.stringify({
@@ -86,3 +86,34 @@ test("only shape rejections are worth resending", () => {
 });
 
 
+
+test("reads the conversation from whichever field carries it", () => {
+	// Chat-completions and Anthropic bodies use `messages`; Responses-shaped ones
+	// use `input`. Both are append-only arrays, so both can share a prefix.
+	const messagesBody = JSON.stringify({ model: "m", messages: [{ role: "user", content: "a" }], stream: true });
+	const inputBody = JSON.stringify({ model: "m", input: [{ role: "user", content: "a" }], stream: true });
+	// The prefix ends with the last element: the closing bracket and the trailing
+	// fields are written when the request actually arrives.
+	assert.equal(prewarmPrefix(messagesBody), '{"model":"m","messages":[{"role":"user","content":"a"}');
+	assert.equal(prewarmPrefix(inputBody), '{"model":"m","input":[{"role":"user","content":"a"}');
+});
+
+test("refuses a body whose conversation is not an array", () => {
+	// A Responses body may pass `input` as a plain string, which has no
+	// append-only structure to share — and a body with neither field is not a
+	// conversation at all.
+	assert.equal(prewarmPrefix(JSON.stringify({ model: "m", input: "just a prompt" })), undefined);
+	assert.equal(prewarmPrefix(JSON.stringify({ model: "m", stream: true })), undefined);
+	assert.equal(prewarmPrefix("not json"), undefined);
+});
+
+test("moves whichever field carries the conversation to the end", () => {
+	const inputBody = JSON.stringify({ model: "m", input: [{ role: "user", content: "a" }], stream: true, tools: [{}] });
+	const moved = moveMessagesLast(inputBody);
+	assert.notEqual(moved, undefined);
+	assert.deepEqual(Object.keys(JSON.parse(moved)), ["model", "stream", "tools", "input"]);
+	assert.deepEqual(JSON.parse(moved).input, JSON.parse(inputBody).input, "and the conversation itself is untouched");
+	// Already last, or no conversation at all: nothing to do.
+	assert.equal(moveMessagesLast(JSON.stringify({ model: "m", input: [] })), undefined);
+	assert.equal(moveMessagesLast(JSON.stringify({ model: "m", stream: true })), undefined);
+});

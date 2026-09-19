@@ -235,6 +235,10 @@ npm test
 ## License
 
 [MIT](./LICENSE)
+## Protocols
+
+The plugin reads the request body's **shape**, not a protocol name. Pre-transmission and the field reordering need a top-level array that a conversation is appended to, and both chat-completions (`messages`) and Anthropic-shaped (`messages`) bodies have one, as do Responses-shaped bodies (`input`). A body whose `input` is a plain string has no such array and gets no pre-transmission rather than a wrong one — the panel reports it as `不适用` instead of an empty pool. Request-body compression and the timing breakdown are transport-level and apply to every protocol.
+
 ## Updating
 
 The plugin carries a three-part version (`package.json`, currently `1.1.2`), and the settings card shows it with a button. **Opening the card checks by itself** and says so — a check that ran in the last five minutes is reused rather than repeated, and the button always asks afresh. **检查更新** asks the Host for the version published on the repository's `main` branch and compares the two; when the published one is newer the button becomes **更新到 X**.
