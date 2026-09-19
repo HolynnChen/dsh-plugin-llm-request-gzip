@@ -726,6 +726,7 @@ test("abandons the whole pool when the history no longer matches", async () => {
 
 		const measurements = await readLedger(harness, "s1");
 		assert.equal(measurements[1].prewarm, null, "nothing is claimed that was not used");
+		assert.equal(measurements[1].prewarmMiss, "mismatch", "and the row says why the pool was not used");
 	} finally {
 		harness.disposeAll();
 		close();

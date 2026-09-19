@@ -517,6 +517,7 @@ function measurement() {
 		cacheHitPercent: 90,
 		toFirstTokenMs: 950,
 		prewarm: { prefixBytes: 400000, deltaBytes: 1200, holdMs: 2400 },
+		prewarmMiss: null,
 		requestBytes: 1400000,
 		sentBytes: 400000,
 		responseBytes: 12345,
@@ -676,6 +677,36 @@ test("fills the panel by proportional column shares instead of by content", asyn
 	assert.equal(shares.length, 11, "one share per column");
 	assert.equal(Math.round(shares.reduce((sum, share) => sum + share, 0)), 100, "the shares exhaust the width");
 	assert.ok(Math.max(...shares) <= 30, "no column is handed a runaway share");
+});
+
+test("marks a row that had a pool but could not use it", async () => {
+	const { exports } = loadBundle();
+	const harness = createClientContext();
+	exports.apply(harness.ctx);
+	const view = harness.registrationFor("conversation.view");
+	const props = {
+		...view.options.inject(),
+		sessionId: "s1",
+		loadTimings: async () => [{ ...measurement(), prewarm: null, prewarmMiss: "mismatch" }]
+	};
+	withoutTimers(() => mount(view.component, props));
+	await flush();
+	const tree = withoutTimers(() => rerender(view.component, props));
+
+	const chips = [];
+	const walk = (node) => {
+		if (node === null || typeof node !== "object") return;
+		if (Array.isArray(node)) {
+			for (const child of node) walk(child);
+			return;
+		}
+		if (typeof node.children?.[0] === "string" && node.children[0].startsWith("预热")) chips.push(node);
+		walk(node.children);
+	};
+	walk(tree);
+	const missChip = chips.find((chip) => chip.children[0] === "预热✗");
+	assert.ok(missChip !== undefined, "the row says the pool was there but unusable");
+	assert.match(String(missChip.props.title), /历史发生了变化/u, "and the tooltip gives the reason");
 });
 
 test("shows a dash, not 0B, when a response was never attributed", async () => {
