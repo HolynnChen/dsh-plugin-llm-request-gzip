@@ -40,7 +40,8 @@ const NEIGHBOUR_NAMESPACES = {
  * @param section - the user section stored for this plugin's namespace.
  * @returns the context, the recorded listeners, and an effect disposer runner.
  */
-function createHarness(section = {}) {
+function createHarness(initialSection = {}) {
+	let section = initialSection;
 	const listeners = new Map();
 	const effects = [];
 	const routes = [];
@@ -93,7 +94,13 @@ function createHarness(section = {}) {
 		}
 	};
 
-	return { ctx, listeners, routes, disposeAll: () => { for (const dispose of effects) dispose(); } };
+	/** Replace the stored section and announce it, as a committed write would. */
+	const setSection = (next) => {
+		section = next;
+		install.hooks.onChange();
+	};
+
+	return { ctx, listeners, routes, setSection, disposeAll: () => { for (const dispose of effects) dispose(); } };
 }
 
 /** Install a spy transport, returning the recorded calls and a restore hook. */
@@ -266,6 +273,8 @@ test("the schema keeps the section valid for dynamic provider routes", () => {
 	assert.equal(resolved.providers.gamma.enabled, false, "enabled defaults to off");
 	assert.equal(resolved.providers.gamma.minBytes, 64);
 	assert.deepEqual(Config({}).providers, {}, "an absent section resolves to no policies");
+	assert.equal(Config({}).timing, true, "the timing preference defaults to on");
+	assert.equal(Config({ timing: false }).timing, false);
 });
 
 //#region end-to-end timing
@@ -411,3 +420,56 @@ test("records the compression actually applied to a measured request", async () 
 });
 
 //#endregion
+
+test("records nothing while the timing preference is off, but still applies gzip", async () => {
+	const plan = { thinkMs: 10, firstTokenMs: 10, decodeMs: 20, chunks: 2, outputTokens: 5 };
+	const { server, base } = await sseServer(plan);
+	const harness = createHarness({ providers: { alpha: { enabled: true, minBytes: 0 } }, timing: false });
+	try {
+		apply(harness.ctx);
+		const waterfall = harness.listeners.get("llm/stream")[0];
+		const inner = readChatStream(base, { messages: [{ role: "user", content: "x".repeat(20000) }] });
+		for await (const _chunk of waterfall({ provider: "alpha", model: "test-model", sessionId: "s1" }, () => inner)) {
+			// Drain.
+		}
+
+		const route = harness.routes.find((candidate) => candidate.methods.includes("GET"));
+		const payload = await (await route.fetch(new Request("http://localhost/api/llm-request-gzip/timings?sessionId=s1"))).json();
+		assert.deepEqual(payload.measurements, [], "a switched-off ledger stores nothing");
+	} finally {
+		server.close();
+		harness.disposeAll();
+	}
+});
+
+test("turning the timing preference on and off takes effect on the next request", async () => {
+	const plan = { thinkMs: 5, firstTokenMs: 5, decodeMs: 10, chunks: 2, outputTokens: 4 };
+	const { server, base } = await sseServer(plan);
+	const harness = createHarness({ timing: false });
+	try {
+		apply(harness.ctx);
+		const waterfall = harness.listeners.get("llm/stream")[0];
+		const drain = async () => {
+			const inner = readChatStream(base, { messages: [{ role: "user", content: "hello" }] });
+			for await (const _chunk of waterfall({ provider: "alpha", model: "test-model", sessionId: "s1" }, () => inner)) {
+				// Drain.
+			}
+		};
+		const route = harness.routes.find((candidate) => candidate.methods.includes("GET"));
+		const readLedger = async () => (await (await route.fetch(new Request("http://localhost/api/llm-request-gzip/timings?sessionId=s1"))).json()).measurements;
+
+		await drain();
+		assert.equal((await readLedger()).length, 0);
+
+		harness.setSection({ timing: true });
+		await drain();
+		assert.equal((await readLedger()).length, 1, "recording resumes once enabled");
+
+		harness.setSection({ timing: false });
+		await drain();
+		assert.equal((await readLedger()).length, 1, "and stops again once disabled");
+	} finally {
+		server.close();
+		harness.disposeAll();
+	}
+});

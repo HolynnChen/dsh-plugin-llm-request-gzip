@@ -22,7 +22,7 @@ Both shipped adapters (`dsh-llm-deepseek`, `dsh-llm-pi-ai`) call the global `fet
 
 ## Request timing
 
-A view of its own appears next to **Trajectory** in the conversation view switcher. It lists every model request of the current session, newest first, and splits each one:
+A view of its own appears next to **Trajectory** in the conversation view switcher, for as long as the preference above is on. It lists every model request of the current session, newest first, and splits each one:
 
 ```
 stream begins ──▶ fetch() ──────▶ body sent ──────▶ first token ──────▶ end
@@ -110,7 +110,13 @@ Then open **Settings → Plugins → Configuration** and look for **Model reques
 
 ## Configure
 
-One row per provider route:
+The card lives in **Settings → Plugins → Configuration**, collapsed like every other plugin card on that page. Expand it to see:
+
+**The plugin switch**
+
+- **Show the Request timing view** — default on. Turning it off also stops the Host recording timings, so a deployment that does not want the view pays nothing for it. The view tab appears and disappears immediately; no page reload is needed.
+
+**One row per provider route**
 
 - **Toggle** — compress this provider's model requests.
 - **Minimum body size (bytes)** — default `1024`. Smaller requests are sent as-is, and compression is skipped whenever it would not actually make the body smaller.
@@ -125,6 +131,7 @@ llm-request-gzip:
     sg:
       enabled: true
       minBytes: 1024
+  timing: true
 ```
 
 ### Safety notes
@@ -164,7 +171,7 @@ npm test
 ```
 
 - `test/host.test.mjs` runs the real `apply()` against a fake Cordis context and a spied `globalThis.fetch`, covering schema resolution, the settings hook contract, `llm/stream` attribution, and the fetch rewrite. Its fixture deliberately reproduces the awkward case — two routes sharing one endpoint — to prove the switch is genuinely per-provider. It also measures a **real** request end to end: a local SSE endpoint whose think time, first-token delay and decode window are separated on purpose, driven through the plugin's real transport diagnostics.
-- `test/client.test.mjs` executes the real browser bundle under a stubbed module loader, asserting that the bundle id matches the package name, that both the settings card and the timing view land on the right slots, and that reads and writes use the correct path operations and revisions.
+- `test/client.test.mjs` executes the real browser bundle under a stubbed module loader and a hook-tracking React stand-in, so it can render the card, click it and re-render: that the bundle id matches the package name, that the card registers on the settings namespace and starts **collapsed**, that the timing switch writes a top-level field, and that the timing view is registered only while the preference is on — including that it stays undecided until the first section arrives and is added or removed as the preference changes.
 - `test/timing.test.mjs` drives the phase arithmetic with injected clocks, so every boundary is asserted at an exact millisecond, including the cases where a phase is genuinely absent.
 
 ## Layout
