@@ -425,13 +425,9 @@ test("tolerates a ledger answer that carries no measurements", async () => {
 	}
 });
 
-test("renders the timing columns, the sizes and the compression delta", async () => {
-	const { exports } = loadBundle();
-	const harness = createClientContext();
-	exports.apply(harness.ctx);
-	const view = harness.registrationFor("conversation.view");
-	const injected = view.options.inject();
-	const measurements = [{
+/** One complete measurement row, as the Host route would return it. */
+function measurement() {
+	return {
 		id: 1,
 		sessionId: "s1",
 		provider: "sg",
@@ -453,7 +449,16 @@ test("renders the timing columns, the sizes and the compression delta", async ()
 		responseBytes: 12345,
 		compressed: true,
 		attempts: 1
-	}];
+	};
+}
+
+test("renders the timing columns, the sizes and the compression delta", async () => {
+	const { exports } = loadBundle();
+	const harness = createClientContext();
+	exports.apply(harness.ctx);
+	const view = harness.registrationFor("conversation.view");
+	const injected = view.options.inject();
+	const measurements = [measurement()];
 	const props = { ...injected, sessionId: "s1", loadTimings: async () => measurements };
 	withoutTimers(() => mount(view.component, props));
 	await flush();
@@ -501,4 +506,36 @@ test("covers the shell's column-width handles so the panel cannot be dragged wid
 	assert.ok(shields[0].props.style.right !== undefined && shields[0].props.style.left === undefined, "the left band is anchored from the right edge");
 	assert.ok(shields[1].props.style.left !== undefined && shields[1].props.style.right === undefined, "the right band is anchored from the left edge");
 	assert.match(String(shields[0].props.style.right), /--dsh-chat-content-width/u, "positioned by the same axis the shell handle uses");
+});
+
+test("fills the panel by proportional column shares instead of by content", async () => {
+	const { exports } = loadBundle();
+	const harness = createClientContext();
+	exports.apply(harness.ctx);
+	const view = harness.registrationFor("conversation.view");
+	const props = { ...view.options.inject(), sessionId: "s1", loadTimings: async () => [measurement()] };
+	withoutTimers(() => mount(view.component, props));
+	await flush();
+	const tree = withoutTimers(() => rerender(view.component, props));
+
+	const collect = (node, type, found = []) => {
+		if (node === null || typeof node !== "object") return found;
+		if (Array.isArray(node)) {
+			for (const child of node) collect(child, type, found);
+			return found;
+		}
+		if (node.type === type) found.push(node);
+		collect(node.children, type, found);
+		return found;
+	};
+
+	const [table] = collect(tree, "table");
+	assert.equal(table.props.style.width, "100%", "the table spans the panel");
+	assert.equal(table.props.style.tableLayout, "fixed", "shares, not content, decide the widths");
+
+	const [colgroup] = collect(tree, "colgroup");
+	const shares = colgroup.children.map((col) => Number.parseFloat(col.props.style.width));
+	assert.equal(shares.length, 10, "one share per column");
+	assert.equal(Math.round(shares.reduce((sum, share) => sum + share, 0)), 100, "the shares exhaust the width");
+	assert.ok(Math.max(...shares) <= 30, "no column is handed a runaway share");
 });

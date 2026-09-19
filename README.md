@@ -47,6 +47,8 @@ stream begins ──▶ fetch() ──────▶ body sent ─────�
 
 Every column header explains itself on hover, and hovering a row shows what does not fit: the preparation time (stream start → request issued), the input/output token counts, and the response size with its encoding.
 
+The table fills the panel by fixed column shares — the provider/model text takes the largest one and the numeric columns take what their values need — so it neither leaves the panel half empty nor stretches whichever value happens to be longest.
+
 The conversation column's own width handles are shell chrome, rendered for whichever view is active. This view covers exactly their two gutter bands — down past the panel and beside the composer, because the handles span the whole conversation body — so a stray drag cannot resize the column. Both bands lie outside the centred content column, so no data sits under them. That behaviour lives in `SHIELD_WIDTH` / `shieldLeft` / `shieldRight` in `lib/client.js` — remove those three and the panel behaves like every other view again.
 
 ### Why this differs from the Trajectory's TTFT
