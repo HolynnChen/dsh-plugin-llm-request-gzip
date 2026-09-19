@@ -157,7 +157,7 @@ function loadBundle() {
 }
 
 /** A fake client context recording slot registrations, plus a controllable settings scope. */
-function createClientContext(sectionValue = { providers: { beta: { enabled: true, minBytes: 4096, prewarm: true } }, timing: true, prewarmPoolSize: 3 }) {
+function createClientContext(sectionValue = { providers: { beta: { enabled: true, minBytes: 4096, prewarm: true } }, timing: true, prewarmPoolSize: 3, encoding: "auto" }) {
 	const harness = { registrations: [] };
 	const listeners = new Set();
 	let snapshot = { status: "ready", value: sectionValue, writable: true, revision: 7 };
@@ -812,4 +812,38 @@ test("keeps the plugin-level controls next to their labels", async () => {
 	const line = collect(body, (node) => Array.isArray(node.children) && node.children.includes(pool))[0];
 	assert.ok(line !== undefined, "the field shares a line with its label");
 	assert.ok(line.children.some((child) => child !== null && typeof child === "object" && child.children?.[0] === "预传输池大小"), "and the label is right beside it");
+});
+
+test("offers the request-body algorithm and writes it as a top-level field", async () => {
+	const { exports } = loadBundle();
+	const harness = createClientContext();
+	exports.apply(harness.ctx);
+	const card = harness.registrationFor("settings.plugin.item");
+	const { ctl } = card.options.inject();
+
+	assert.equal((await ctl.read()).encoding, "auto", "the stored algorithm is read for the panel");
+
+	const collapsed = mount(card.component, { ctl });
+	await flush();
+	collapsed.children[0].props.onClick();
+	const body = rerender(card.component, { ctl }).children[1];
+
+	const select = (function find(node) {
+		if (node === null || typeof node !== "object") return undefined;
+		if (Array.isArray(node)) {
+			for (const child of node) {
+				const hit = find(child);
+				if (hit !== undefined) return hit;
+			}
+			return undefined;
+		}
+		if (node.type === "select") return node;
+		return find(node.children);
+	})(body);
+	assert.ok(select !== undefined, "the algorithm is offered");
+	assert.deepEqual(select.children.map((option) => option.props.value), ["auto", "gzip"]);
+	assert.equal(select.props.value, "auto", "and reflects the stored choice");
+
+	await ctl.write("encoding", { value: "gzip" }, 7);
+	assert.deepEqual(harness.ctx.writes, [{ ns: NS, ops: [{ op: "set", path: ["encoding"], value: "gzip" }], revision: 7 }]);
 });

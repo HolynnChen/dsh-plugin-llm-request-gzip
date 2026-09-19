@@ -15,7 +15,7 @@
 
 import assert from "node:assert/strict";
 import http from "node:http";
-import { gunzipSync, gzipSync } from "node:zlib";
+import { brotliDecompressSync, gunzipSync, gzipSync } from "node:zlib";
 import test from "node:test";
 import { apply, Config, NS } from "../lib/index.js";
 
@@ -113,11 +113,15 @@ function createHarness(initialSection = {}, options = {}) {
 }
 
 /** Install a spy transport, returning the recorded calls and a restore hook. */
-function spyFetch() {
+function spyFetch(plan = {}) {
 	const calls = [];
 	const real = globalThis.fetch;
 	globalThis.fetch = async (input, init) => {
 		calls.push({ url: String(input), init });
+		const header = init?.headers?.["content-encoding"];
+		if (plan.refuseBr === true && header === "br") {
+			return new Response("unsupported media type", { status: 415 });
+		}
 		return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
 	};
 	return { calls, restore: () => { globalThis.fetch = real; } };
@@ -127,8 +131,10 @@ function spyFetch() {
 function bodyOf(call) {
 	const header = call.init.headers["content-encoding"];
 	if (header === undefined) return { encoding: "identity", text: call.init.body };
-	assert.equal(header, "gzip");
-	return { encoding: "gzip", text: gunzipSync(Buffer.from(call.init.body)).toString("utf8") };
+	// Decode whichever algorithm the plugin chose, so assertions stay about the
+	// body rather than about the codec.
+	const decode = header === "br" ? brotliDecompressSync : gunzipSync;
+	return { encoding: header, text: decode(Buffer.from(call.init.body)).toString("utf8") };
 }
 
 /**
@@ -178,7 +184,7 @@ test("compresses only the enabled provider, even when two routes share an endpoi
 		const beta = bodyOf(transport.calls[0]);
 		const alpha = bodyOf(transport.calls[1]);
 
-		assert.equal(beta.encoding, "gzip", "the enabled route must be compressed");
+		assert.equal(beta.encoding, "br", "the enabled route is compressed, brotli first");
 		assert.equal(beta.text, betaCall.init.body, "compression must preserve the exact JSON body");
 		assert.equal(alpha.encoding, "identity", "a disabled route on the same endpoint must stay uncompressed");
 		assert.equal(alpha.text, alphaCall.init.body);
@@ -200,7 +206,7 @@ test("keeps required headers and drops the stale content-length", async () => {
 		const headers = transport.calls[0].init.headers;
 		assert.equal(headers.authorization, "Bearer secret");
 		assert.equal(headers["content-type"], "application/json");
-		assert.equal(headers["content-encoding"], "gzip");
+		assert.equal(headers["content-encoding"], "br");
 		assert.equal(headers["content-length"], undefined, "content-length would describe the uncompressed body");
 	} finally {
 		transport.restore();
@@ -218,7 +224,7 @@ test("falls back to endpoint matching when no provider is attributed", async () 
 		const unmatched = chatRequest(OTHER_ENDPOINT);
 		await globalThis.fetch(unmatched.input, unmatched.init);
 
-		assert.equal(bodyOf(transport.calls[0]).encoding, "gzip");
+		assert.equal(bodyOf(transport.calls[0]).encoding, "br");
 		assert.equal(bodyOf(transport.calls[1]).encoding, "identity");
 	} finally {
 		transport.restore();
@@ -763,12 +769,13 @@ test("pre-transmission composes with gzip instead of replacing it", async () => 
 		await runStep(harness, base, "s1", second, "tool-calls");
 
 		const held = requests[1];
-		assert.equal(held.encoding, "gzip", "the held request is gzip-encoded, keeping the compression");
+		assert.equal(held.encoding, "br", "the held request is compressed, keeping the compression");
 		assert.equal(held.completed, true);
 		assert.ok(held.firstChunkAt <= beforeSecondStep, "the compressed history went out before the second step");
 
 		const wire = Buffer.concat(held.raw);
-		assert.deepEqual(JSON.parse(gunzipSync(wire).toString("utf8")), { messages: second }, "the parts decompress as one stream");
+		const codec = held.encoding === "br" ? brotliDecompressSync : gunzipSync;
+		assert.deepEqual(JSON.parse(codec(wire).toString("utf8")), { messages: second }, "the parts decompress as one stream");
 		assert.ok(wire.byteLength < Buffer.byteLength(JSON.stringify({ messages: second })), "and it is still compressed");
 	} finally {
 		harness.disposeAll();
@@ -995,5 +1002,42 @@ test("gives up on an endpoint that refuses a chunked body", async () => {
 	} finally {
 		harness.disposeAll();
 		close();
+	}
+});
+
+test("never tries brotli when gzip is chosen", async () => {
+	const harness = createHarness({ encoding: "gzip", providers: { beta: { enabled: true } } });
+	const transport = spyFetch();
+	try {
+		apply(harness.ctx);
+		const call = chatRequest(SHARED_ENDPOINT);
+		await streamWithFetch(harness.listeners, "beta", () => globalThis.fetch(call.input, call.init));
+		const wire = bodyOf(transport.calls[0]);
+		assert.equal(wire.encoding, "gzip", "the algorithm is honoured");
+		assert.equal(wire.text, call.init.body, "and the body survives it");
+	} finally {
+		transport.restore();
+		harness.disposeAll();
+	}
+});
+
+test("retries as gzip when an endpoint refuses brotli, then remembers it", async () => {
+	const harness = createHarness({ providers: { beta: { enabled: true } } });
+	const transport = spyFetch({ refuseBr: true });
+	try {
+		apply(harness.ctx);
+		const first = chatRequest(SHARED_ENDPOINT);
+		await streamWithFetch(harness.listeners, "beta", () => globalThis.fetch(first.input, first.init));
+
+		const bodies = transport.calls.map((call) => bodyOf(call));
+		assert.deepEqual(bodies.map((entry) => entry.encoding), ["br", "gzip"], "the refused brotli body is retried as gzip");
+		assert.equal(bodies[1].text, first.init.body, "and the retry carries exactly the same body");
+
+		const second = chatRequest(SHARED_ENDPOINT);
+		await streamWithFetch(harness.listeners, "beta", () => globalThis.fetch(second.input, second.init));
+		assert.deepEqual(transport.calls.map((call) => call.init.headers["content-encoding"]), ["br", "gzip", "gzip"], "the endpoint is not tried again");
+	} finally {
+		transport.restore();
+		harness.disposeAll();
 	}
 });
