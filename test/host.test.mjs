@@ -1442,3 +1442,27 @@ test("shows stored history in front of a session that is already running", async
 		close();
 	}
 });
+
+test("records where a mismatch's bytes part company", async () => {
+	// A mismatch says the history no longer continues a member, which on its own
+	// cannot be told apart from the fixed fields changing. The offset does.
+	const { close, requests, base } = await recordingServer();
+	const harness = createHarness({ providers: { alpha: { prewarm: true } }, prewarmPoolSize: 1 });
+	const history = [{ role: "user", content: "turn one" }];
+	try {
+		apply(harness.ctx);
+		await runStep(harness, base, "s1", history, "tool-calls");
+		assert.ok(await waitFor(() => requests.some((entry) => !entry.completed && !entry.aborted)), "a request is held");
+
+		await runStep(harness, base, "s1", [{ role: "user", content: "a different history" }], "tool-calls");
+		const row = (await readLedger(harness, "s1"))[1];
+		assert.equal(row.prewarmMiss, "mismatch");
+		assert.equal(typeof row.prewarmMissDetail?.agreed, "number", "the agreement offset is recorded");
+		assert.ok(row.prewarmMissDetail.agreed < row.prewarmMissDetail.member, "and it stopped short of the member");
+		assert.ok(row.prewarmMissDetail.body > 0, "with the size of the body that arrived");
+		assert.ok(row.prewarmMissDetail.messagesAt >= 0, "and where the messages array begins");
+	} finally {
+		harness.disposeAll();
+		close();
+	}
+});
