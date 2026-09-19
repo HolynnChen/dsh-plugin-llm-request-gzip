@@ -557,6 +557,39 @@ test("takes the shell's column-width handles out of the layout while mounted", a
 	}
 });
 
+test("bounds the table's own scroller, so the header can stick", async () => {
+	globalThis.window = { innerHeight: 900, addEventListener: () => {}, removeEventListener: () => {} };
+	try {
+		const { exports } = loadBundle();
+		const harness = createClientContext();
+		exports.apply(harness.ctx);
+		const view = harness.registrationFor("conversation.view");
+		const props = { ...view.options.inject(), sessionId: "s1", loadTimings: async () => [measurement()] };
+		withoutTimers(() => mount(view.component, props));
+		await flush();
+		const tree = withoutTimers(() => rerender(view.component, props));
+
+		const collect = (node, found = []) => {
+			if (node === null || typeof node !== "object") return found;
+			if (Array.isArray(node)) {
+				for (const child of node) collect(child, found);
+				return found;
+			}
+			if (node.type === "table") found.push(node);
+			collect(node.children, found);
+			return found;
+		};
+		const [table] = collect(tree);
+		const wrapper = tree.children.find((child) => child !== null && typeof child === "object" && child.children?.some?.((inner) => inner === table));
+		assert.ok(wrapper !== undefined, "the table sits in its own scrolling wrapper");
+		assert.equal(wrapper.props.style.overflow, "auto");
+		assert.match(String(wrapper.props.style.maxHeight), /100vh/u, "bounded to the viewport, so the header pins to the table");
+		assert.equal(wrapper.props.style.minHeight, 0, "and can still shrink inside a shorter flex parent");
+	} finally {
+		delete globalThis.window;
+	}
+});
+
 test("starts at the top when the view is opened", () => {
 	const { exports } = loadBundle();
 	const harness = createClientContext();
