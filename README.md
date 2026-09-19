@@ -150,6 +150,25 @@ llm-request-gzip:
   timing: true
 ```
 
+### Pre-transmission (opt-in, per provider)
+
+A multi-turn request re-sends its entire history every step. With **预传输 / pre-transmission** enabled for a provider, the plugin puts the *shared* history of the next request on the wire the moment a step finishes — while the tools that step asked for are still running — so that when the next request is actually issued, only the increment (the assistant turn and the tool results) still has to be written.
+
+It is off by default, and it is worth being clear about why it is a measured experiment rather than a free win:
+
+- **The saving is bounded by the upload it removes.** The 发送 column is that upload; on this deployment it is single-digit to low-hundreds of milliseconds against a request measured in tens of seconds. The feature moves it off the critical path; it cannot move anything else, because a gateway must still receive the complete body before inference starts.
+- **A held request occupies a gateway slot** for the whole tool run. Gateways with short body timeouts will drop it — harmlessly, but then nothing was gained for that step.
+- **It produces a chunked body**, which some proxies refuse.
+
+Because of that, every attempt is guarded and observable:
+
+- The held request is claimed **only** if the arriving body literally continues the pre-sent bytes *and* every header still matches. Any difference abandons it and the request goes out normally.
+- If the endpoint answers badly — or refuses a chunked body — pre-transmission is switched off for that endpoint for the life of the process, and a shape rejection (411/415/501) is resent as an ordinary request.
+- Any failure inside the mechanism falls back to a normal request.
+- Rows that used it carry a **预热** chip; hover it for the pre-sent bytes, the increment, and how long the request was held.
+
+gzip and pre-transmission compose: the split keeps **one** deflate stream open, so the two parts decompress as a single body and the compression is kept rather than traded away.
+
 ### Safety notes
 
 - Every provider is **off by default**.

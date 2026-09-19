@@ -327,8 +327,8 @@ test("joins the provider directory with the stored policy and both profile shape
 	const snapshot = await ctl.read();
 	assert.equal(snapshot.revision, 7);
 	assert.deepEqual(snapshot.routes, [
-		{ id: "alpha", name: "Alpha", endpoint: SITE, enabled: false, minBytes: 1024 },
-		{ id: "beta", name: "Beta", endpoint: SITE, enabled: true, minBytes: 4096 }
+		{ id: "alpha", name: "Alpha", endpoint: SITE, enabled: false, minBytes: 1024, prewarm: false },
+		{ id: "beta", name: "Beta", endpoint: SITE, enabled: true, minBytes: 4096, prewarm: false }
 	]);
 });
 
@@ -338,12 +338,13 @@ test("writes path-addressed provider ops with the revision it read", async () =>
 	exports.apply(harness.ctx);
 	const { ctl } = harness.registrationFor("settings.plugin.item").options.inject();
 
-	await ctl.write("alpha", { enabled: true, minBytes: 2048 }, 7);
+	await ctl.write("alpha", { enabled: true, minBytes: 2048, prewarm: true }, 7);
 	assert.deepEqual(harness.ctx.writes, [{
 		ns: NS,
 		ops: [
 			{ op: "set", path: ["providers", "alpha", "enabled"], value: true },
-			{ op: "set", path: ["providers", "alpha", "minBytes"], value: 2048 }
+			{ op: "set", path: ["providers", "alpha", "minBytes"], value: 2048 },
+			{ op: "set", path: ["providers", "alpha", "prewarm"], value: true }
 		],
 		revision: 7
 	}]);
@@ -486,6 +487,7 @@ function measurement() {
 		cacheReadTokens: 900,
 		cacheWriteTokens: 0,
 		cacheHitPercent: 90,
+		prewarm: { prefixBytes: 400000, deltaBytes: 1200, holdMs: 2400 },
 		requestBytes: 1400000,
 		sentBytes: 400000,
 		responseBytes: 12345,
@@ -524,6 +526,7 @@ test("renders the timing columns, the sizes and the compression delta", async ()
 
 	assert.deepEqual(labels, ["时间", "提供方 / 模型", "发送", "服务端", "首 token", "生成", "tok/s", "缓存", "请求体", "响应体", "总计"]);
 	assert.ok(texts.includes("90.0%"), "the prefix-cache hit rate is shown per request");
+	assert.ok(texts.includes("预热"), "a pre-transmitted request is marked as such");
 	assert.ok(texts.includes("1.34MB→390.6KB"), `expected the compression delta, got ${JSON.stringify(texts.filter((t) => typeof t === "string"))}`);
 	assert.ok(texts.includes("12.1KB"), "expected the response size");
 	assert.ok(texts.includes("900ms"), "expected the server phase");

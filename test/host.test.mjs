@@ -561,3 +561,166 @@ test("leaves the response encoding null when the gateway does not compress", asy
 		harness.disposeAll();
 	}
 });
+
+//#region pre-transmission
+
+/**
+ * A server that records the chunk timeline of every request, so a held request
+ * can be told apart from an ordinary one and the wire bytes can be inspected.
+ */
+/** Poll until `predicate` holds, so a test can wait for an asynchronous side effect. */
+async function waitFor(predicate, timeoutMs = 2000) {
+	const started = Date.now();
+	while (Date.now() - started < timeoutMs) {
+		if (predicate()) return true;
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
+	return predicate();
+}
+
+async function recordingServer() {
+	const requests = [];
+	const sockets = new Set();
+	const server = http.createServer((req, res) => {
+		const started = Date.now();
+		const record = {
+			chunks: [],
+			raw: [],
+			completed: false,
+			aborted: false,
+			encoding: req.headers["content-encoding"] ?? null,
+			transfer: req.headers["transfer-encoding"] ?? null
+		};
+		requests.push(record);
+		req.on("data", (chunk) => {
+			record.firstChunkAt ??= Date.now();
+			record.chunks.push({ at: Date.now() - started, size: chunk.length });
+			record.raw.push(chunk);
+		});
+		req.on("aborted", () => {
+			record.aborted = true;
+		});
+		req.on("end", () => {
+			record.completed = true;
+			res.writeHead(200, { "content-type": "text/event-stream" });
+			res.end('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n');
+		});
+	});
+	// A held request keeps its socket open, which would otherwise leave the test
+	// process waiting on `server.close()`.
+	server.on("connection", (socket) => {
+		sockets.add(socket);
+		socket.on("close", () => sockets.delete(socket));
+	});
+	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const close = () => {
+		for (const socket of sockets) socket.destroy();
+		server.close();
+	};
+	return { server, requests, close, base: `http://127.0.0.1:${server.address().port}/v1` };
+}
+
+/** Drive one complete model step for `messages`, as the agent loop would. */
+async function runStep(harness, base, sessionId, messages) {
+	const waterfall = harness.listeners.get("llm/stream")[0];
+	const inner = readChatStream(base, { messages });
+	const received = [];
+	for await (const chunk of waterfall({ provider: "alpha", model: "test-model", sessionId }, () => inner)) received.push(chunk);
+	return received;
+}
+
+/** Read the timing ledger for one session. */
+async function readLedger(harness, sessionId) {
+	const route = harness.routes.find((candidate) => candidate.methods.includes("GET"));
+	const answer = await route.fetch(new Request(`http://localhost/api/llm-request-gzip/timings?sessionId=${sessionId}`));
+	return (await answer.json()).measurements;
+}
+
+test("pre-transmits the shared history, then sends only the increment", async () => {
+	const { close, requests, base } = await recordingServer();
+	const harness = createHarness({ providers: { alpha: { prewarm: true } } });
+	try {
+		apply(harness.ctx);
+		const history = [{ role: "user", content: "turn one ".repeat(200) }];
+		await runStep(harness, base, "s1", history);
+
+		assert.ok(await waitFor(() => requests.length === 2), "the first step opened a second, held request");
+		const held = requests[1];
+		assert.equal(held.completed, false, "the held request is still open");
+		assert.ok(held.chunks.length >= 1, "its history is already on the wire");
+		assert.equal(held.transfer, "chunked", "a body it cannot size yet is chunked");
+
+		const beforeSecondStep = Date.now();
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		await runStep(harness, base, "s1", [
+			...history,
+			{ role: "assistant", content: "ok" },
+			{ role: "user", content: "turn two" }
+		]);
+		assert.ok(held.firstChunkAt <= beforeSecondStep, "the history was on the wire before the second step was even issued");
+
+		assert.equal(requests.length, 2, "the second step reused the held request instead of opening another");
+		assert.equal(held.completed, true, "the increment completed it");
+		assert.ok(held.chunks.length >= 2, "the increment was written into the held request");
+		assert.ok(held.chunks[0].size > held.chunks[held.chunks.length - 1].size, "the history dwarfs the increment");
+
+		const measurements = await readLedger(harness, "s1");
+		assert.equal(measurements[1].prewarm === null, false, "the second step records its pre-transmission");
+		assert.ok(measurements[1].prewarm.prefixBytes > measurements[1].prewarm.deltaBytes);
+	} finally {
+		harness.disposeAll();
+		close();
+	}
+});
+
+test("abandons a held request whose history no longer matches", async () => {
+	const { close, requests, base } = await recordingServer();
+	const harness = createHarness({ providers: { alpha: { prewarm: true } } });
+	try {
+		apply(harness.ctx);
+		await runStep(harness, base, "s1", [{ role: "user", content: "turn one" }]);
+		assert.ok(await waitFor(() => requests.length === 2 && requests[1].chunks.length > 0), "a request is held");
+
+		await runStep(harness, base, "s1", [{ role: "user", content: "a different history" }]);
+
+		assert.equal(requests.length, 3, "the mismatch opened a fresh request");
+		assert.equal(requests[1].aborted, true, "the held request was abandoned");
+		assert.equal(requests[2].completed, true);
+		assert.equal(requests[2].transfer, null, "the ordinary path keeps a declared length");
+
+		const measurements = await readLedger(harness, "s1");
+		assert.equal(measurements[1].prewarm, null, "nothing is claimed that was not used");
+	} finally {
+		harness.disposeAll();
+		close();
+	}
+});
+
+test("pre-transmission composes with gzip instead of replacing it", async () => {
+	const { close, requests, base } = await recordingServer();
+	const harness = createHarness({ providers: { alpha: { prewarm: true, enabled: true, minBytes: 0 } } });
+	const first = [{ role: "user", content: "x".repeat(20000) }];
+	const second = [...first, { role: "assistant", content: "ok" }];
+	try {
+		apply(harness.ctx);
+		await runStep(harness, base, "s1", first);
+		assert.ok(await waitFor(() => requests.length === 2 && requests[1].chunks.length > 0), "a request is held");
+		const beforeSecondStep = Date.now();
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		await runStep(harness, base, "s1", second);
+
+		const held = requests[1];
+		assert.equal(held.encoding, "gzip", "the held request is gzip-encoded, keeping the compression");
+		assert.equal(held.completed, true);
+		assert.ok(held.firstChunkAt <= beforeSecondStep, "the compressed history went out before the second step");
+
+		const wire = Buffer.concat(held.raw);
+		assert.deepEqual(JSON.parse(gunzipSync(wire).toString("utf8")), { messages: second }, "the parts decompress as one stream");
+		assert.ok(wire.byteLength < Buffer.byteLength(JSON.stringify({ messages: second })), "and it is still compressed");
+	} finally {
+		harness.disposeAll();
+		close();
+	}
+});
+
+//#endregion
