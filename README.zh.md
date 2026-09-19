@@ -35,15 +35,18 @@ DSH 的两个 adapter（`dsh-llm-deepseek`、`dsh-llm-pi-ai`）都直接调用�
 
 | 列 | 含义 |
 | --- | --- |
-| 准备 | 流开始 → 请求真正发出（请求体序列化、附件处理）。 |
+| 时间 | 请求发出的时刻，精确到秒。 |
+| 提供方 / 模型 | 提供方路由、模型、用途（压缩/标题）；请求体确实被压缩时带 `gzip` 标记，运行中或失败也有标记。 |
 | 发送 | 请求发出 → **请求体全部发送完毕**。 |
 | 服务端 | 发送完毕 → 收到响应头。 |
 | 首 token | 发送完毕 → **首个 token**。 |
 | 生成 | 首个 token → 流结束。 |
 | tok/s | 输出 token 数 ÷ 生成区间。 |
+| 请求体 | 被 gzip 压缩时显示 `压缩前 → 实际发送`，否则只显示序列化后的大小。 |
+| 响应体 | **线路上**实际收到的字节数（因此网关压缩后的传输量会被如实计入）。 |
 | 总计 | 发出请求 → 流结束。 |
 
-每行还会带上提供方、模型、用途（压缩/标题）、该请求是否真的被 gzip 压缩，以及运行中或失败后的状态。
+把鼠标停在某一行上，可以看到塞不进表格的细节：准备耗时（流开始 → 请求发出）以及输入/输出 token 数。
 
 ### 为什么和「轨迹」里的 TTFT 不一样
 
@@ -52,11 +55,13 @@ DSH 的两个 adapter（`dsh-llm-deepseek`、`dsh-llm-pi-ai`）都直接调用�
 
 ### 怎么测的，以及为什么没有估算
 
-「发送」取自 undici 自己的 `undici:request:bodySent` 诊断——传输层写完请求体的那一刻；「服务端」取自 `undici:request:headers`。
-两者都通过 `node:diagnostics_channel` 消费，因此**测量本身完全不改动请求**：请求体保留 `content-length`，也不会被改成 chunked 编码。
+「发送」取自 undici 自己的 `undici:request:bodySent` 诊断——传输层写完请求体的那一刻；「服务端」取自 `undici:request:headers`；响应字节数取自 `undici:request:bodyChunkReceived`，它是**线路字节**。
+三者都通过 `node:diagnostics_channel` 消费，因此**测量本身完全不改动请求**：请求体保留 `content-length`，也不会被改成 chunked 编码。
 
-这些 channel 是进程级的，但每个回调都运行在发起该请求的异步上下文里，所以插件是靠自己的 `AsyncLocalStorage` 作用域来归属请求，而不是靠 channel。
-其它插件的流量会被忽略，聊天请求之前可能发生的 `FormData` 文件上传也不会被误认为它。
+这些 channel 是进程级的，而且响应侧那几个还是**按 socket 归属的**：在 keep-alive 复用连接上，它们会运行在最早打开该 socket 的那个请求的异步上下文里。
+在那里读环境上下文，会把 `headers` 归属到一个更早、已经结束的请求上——这正是「朴素实现只在每条连接的第一个请求上报服务端耗时、之后全是 null」的原因。
+本插件在 `undici:request:create`（它仍在调用方上下文里）把测量与 undici 的 request 对象配对，之后的诊断一律按该对象身份查找，因此复用连接的请求不会丢阶段。
+`test/host.test.mjs` 会在同一条连接上连续发 4 个请求来断言这一点，一旦把配对改回按上下文归属，该测试就会失败。
 
 测量数据保存在 Host 内存中（每会话最近 100 条、最近 40 个会话），通过产品自身的 `/api` 鉴权路由提供给页面。它不持久化，因此 DSH 重启后不再保留。
 
@@ -113,6 +118,9 @@ git clone https://github.com/HolynnChen/dsh-plugin-llm-request-gzip.git \
 但必须**刷新浏览器页面**——客户端模块图是在页面加载时注入的，已打开的页面拿不到新的 bundle。
 
 然后打开 **设置 → 插件 → 配置**，找到 **模型请求 gzip 压缩**。
+
+> **更新已安装的副本。** `patchReload: live` 监听的是 `cordis.patch.yml`，**不监听插件源码**，所以改过的 Host 半边必须重启 `dsh web` 才会生效。
+> 浏览器 bundle 不同：它会被重新从磁盘读取，因此客户端半边只要刷新页面即可。拿不准时两个都做。
 
 ## 配置
 

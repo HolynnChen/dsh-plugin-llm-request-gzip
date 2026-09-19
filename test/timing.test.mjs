@@ -25,8 +25,19 @@ function fixedClock(start = 1000, wallStart = 1700000000000) {
 	};
 }
 
-/** One undici-style request descriptor for the transport events. */
+/** One undici-style request descriptor. */
 const REQUEST = { origin: "https://gateway.example", path: "/v1/chat/completions?stream=1" };
+
+/** The serialized body size every test pretends to send. */
+const BODY_BYTES = 5000;
+
+/** A store whose only record has already issued its request. */
+function opened(clock) {
+	const store = createTimingStore({ now: clock.now, wallNow: clock.wallNow });
+	const record = store.begin({ provider: "sg", model: "deepseek-flash", sessionId: "s1" });
+	store.noteFetch(record, "https://gateway.example/v1/chat/completions?stream=1", BODY_BYTES);
+	return { store, record };
+}
 
 test("decomposes one request into every phase", () => {
 	const clock = fixedClock();
@@ -34,11 +45,11 @@ test("decomposes one request into every phase", () => {
 	const record = store.begin({ provider: "sg", model: "deepseek-flash", sessionId: "s1" });
 
 	clock.advance(5); // serialization before the request exists
-	assert.equal(store.noteFetch(record, "https://gateway.example/v1/chat/completions?stream=1"), true);
+	assert.equal(store.noteFetch(record, "https://gateway.example/v1/chat/completions?stream=1", BODY_BYTES), true);
 	clock.advance(20); // upload
-	store.noteTransport(record, "body-sent", REQUEST, clock.now());
+	store.notePhase(record, "body-sent", clock.now());
 	clock.advance(30); // server accepts and answers
-	store.noteTransport(record, "headers", REQUEST, clock.now());
+	store.notePhase(record, "headers", clock.now());
 	clock.advance(10); // prefill until the first token
 	store.observeChunk(record, { type: "text-delta", index: 0, text: "hi" }, clock.now());
 	clock.advance(200); // decode
@@ -57,31 +68,65 @@ test("decomposes one request into every phase", () => {
 	assert.equal(measurement.outputTokens, 100);
 	assert.equal(measurement.tokensPerSecond, 476.2, "100 tokens over 0.21s");
 	assert.equal(measurement.attempts, 1);
+	assert.equal(measurement.requestBytes, BODY_BYTES);
+	assert.equal(measurement.sentBytes, BODY_BYTES, "uncompressed by default");
+	assert.equal(measurement.compressed, false);
+	assert.equal(measurement.responseBytes, 0);
 });
 
-test("matches transport events by origin and path, ignoring the query", () => {
+test("claims only the request it measured", () => {
 	const clock = fixedClock();
-	const store = createTimingStore({ now: clock.now, wallNow: clock.wallNow });
-	const record = store.begin({ provider: "sg", sessionId: "s1" });
-	store.noteFetch(record, "https://gateway.example/v1/chat/completions?stream=1");
+	const { store, record } = opened(clock);
 
-	const other = { origin: "https://gateway.example", path: "/v1/files" };
-	assert.equal(store.noteTransport(record, "body-sent", other, clock.now()), false, "the Files API upload is not the model request");
-	const elsewhere = { origin: "https://other.example", path: "/v1/chat/completions" };
-	assert.equal(store.noteTransport(record, "body-sent", elsewhere, clock.now()), false);
-	assert.equal(store.noteTransport(record, "body-sent", { origin: REQUEST.origin, path: "/v1/chat/completions" }, clock.now()), true);
-	assert.equal(store.noteTransport(record, "body-sent", REQUEST, clock.now()), false, "one phase is recorded once");
+	assert.equal(store.claimsRequest(record, REQUEST), true, "the query string is not part of the comparison");
+	assert.equal(store.claimsRequest(record, { origin: "https://gateway.example", path: "/v1/files" }), false, "the Files API upload is not the model request");
+	assert.equal(store.claimsRequest(record, { origin: "https://other.example", path: "/v1/chat/completions" }), false);
+	assert.equal(store.claimsRequest(record, undefined), false);
+	assert.equal(store.claimsRequest(store.begin({ provider: "sg", sessionId: "s2" }), REQUEST), false, "a record with no request yet claims nothing");
+});
+
+test("records each phase once", () => {
+	const clock = fixedClock();
+	const { store, record } = opened(clock);
+	clock.advance(10);
+	assert.equal(store.notePhase(record, "body-sent", clock.now()), true);
+	clock.advance(10);
+	assert.equal(store.notePhase(record, "body-sent", clock.now()), false, "a repeated diagnostic cannot move the boundary");
+	assert.equal(store.snapshot("s1")[0].sendMs, 10);
+});
+
+test("accumulates response bytes as they arrive", () => {
+	const clock = fixedClock();
+	const { store, record } = opened(clock);
+	store.noteResponseBytes(record, 100);
+	store.noteResponseBytes(record, 250);
+	store.noteResponseBytes(record, Number.NaN);
+	store.finish(record, clock.now());
+	assert.equal(store.snapshot("s1")[0].responseBytes, 350);
+});
+
+test("reports a compressed request only when the body really shrank", () => {
+	const clock = fixedClock();
+	const compressed = opened(clock);
+	compressed.store.noteSent(compressed.record, 900);
+	const small = compressed.store.snapshot("s1")[0];
+	assert.equal(small.sentBytes, 900);
+	assert.equal(small.compressed, true);
+	assert.equal(small.requestBytes, BODY_BYTES, "the serialized size is kept alongside the sent size");
+
+	const grown = opened(clock);
+	grown.store.noteSent(grown.record, BODY_BYTES + 10);
+	const larger = grown.store.snapshot("s1")[0];
+	assert.equal(larger.compressed, false, "a rewrite that did not help is not reported as compression");
 });
 
 test("keeps a retry from restarting the clock", () => {
 	const clock = fixedClock();
-	const store = createTimingStore({ now: clock.now, wallNow: clock.wallNow });
-	const record = store.begin({ provider: "sg", sessionId: "s1" });
-	assert.equal(store.noteFetch(record, "https://gateway.example/v1/chat/completions"), true);
+	const { store, record } = opened(clock);
 	clock.advance(50);
-	assert.equal(store.noteFetch(record, "https://gateway.example/v1/chat/completions"), false);
+	assert.equal(store.noteFetch(record, "https://gateway.example/v1/chat/completions", BODY_BYTES), false);
 	clock.advance(50);
-	store.noteTransport(record, "body-sent", { origin: "https://gateway.example", path: "/v1/chat/completions" }, clock.now());
+	store.notePhase(record, "body-sent", clock.now());
 	store.finish(record, clock.now());
 
 	const [measurement] = store.snapshot("s1");
@@ -93,7 +138,7 @@ test("reports absent phases as null instead of zero", () => {
 	const clock = fixedClock();
 	const store = createTimingStore({ now: clock.now, wallNow: clock.wallNow });
 	const running = store.begin({ provider: "sg", sessionId: "s1" });
-	store.noteFetch(running, "https://gateway.example/v1/chat/completions");
+	store.noteFetch(running, "https://gateway.example/v1/chat/completions", BODY_BYTES);
 	clock.advance(10);
 	store.observeChunk(running, { type: "text-delta", index: 0, text: "a" }, clock.now());
 
@@ -107,11 +152,9 @@ test("reports absent phases as null instead of zero", () => {
 
 test("a stream that ends without tokens still closes", () => {
 	const clock = fixedClock();
-	const store = createTimingStore({ now: clock.now, wallNow: clock.wallNow });
-	const record = store.begin({ provider: "sg", sessionId: "s1" });
-	store.noteFetch(record, "https://gateway.example/v1/chat/completions");
+	const { store, record } = opened(clock);
 	clock.advance(5);
-	store.noteTransport(record, "body-sent", { origin: "https://gateway.example", path: "/v1/chat/completions" }, clock.now());
+	store.notePhase(record, "body-sent", clock.now());
 	clock.advance(25);
 	store.finish(record, clock.now(), "error");
 

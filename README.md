@@ -27,22 +27,25 @@ A view of its own appears next to **Trajectory** in the conversation view switch
 ```
 stream begins ──▶ fetch() ──────▶ body sent ──────▶ first token ──────▶ end
       │             │                │                  │              │
-      │        prepare           send            TTFT    │        generation
-      │                            └──── server ─────┘  │              │
+      │          prepare          send            TTFT    │        generation
+      │                            └──── server ─────┘   │              │
       └────────────────────────── total ───────────────────────────────┘
 ```
 
 | Column | Meaning |
 | --- | --- |
-| 准备 / prepare | Stream start → the request being issued (body serialization, attachment work). |
+| 时间 / time | When the request was issued, to the second. |
+| 提供方 / 模型 | Provider route, model, purpose (compaction or session title), a `gzip` chip when the body was really compressed, and a running or failed badge. |
 | 发送 / send | The request being issued → **the body fully sent**. |
 | 服务端 / server | Body sent → response headers received. |
 | 首 token / TTFT | Body sent → **first token**. |
 | 生成 / generation | First token → stream end. |
 | tok/s | Output tokens ÷ the generation window. |
+| 请求体 / request body | `before → after` when the body was gzipped, otherwise the single serialized size. |
+| 响应体 / response body | Bytes actually received **on the wire** (so a gateway-compressed reply counts as what was transferred). |
 | 总计 / total | Fetch call → stream end. |
 
-Each row also carries the provider, model, purpose (compaction / title), whether the request was actually gzip-compressed, and its status while running or after a failure.
+Hovering a row shows what does not fit: the preparation time (stream start → request issued) and the input/output token counts.
 
 ### Why this differs from the Trajectory's TTFT
 
@@ -50,9 +53,9 @@ The Trajectory's own timing panel measures TTFT from the **start of the step** (
 
 ### How it measures, and why nothing is guessed
 
-`send` comes from undici's own `undici:request:bodySent` diagnostic — the moment the transport finished writing the body — and `server` from `undici:request:headers`. Both are consumed through `node:diagnostics_channel`, so **the request is never modified to measure it**: the body keeps its `content-length` and no chunked encoding is introduced.
+`send` comes from undici's own `undici:request:bodySent` diagnostic — the moment the transport finished writing the body — and `server` from `undici:request:headers`. Response bytes come from `undici:request:bodyChunkReceived`, which reports **wire** bytes. All three are consumed through `node:diagnostics_channel`, so **the request is never modified to measure it**: the body keeps its `content-length` and no chunked encoding is introduced.
 
-The channels are process-wide, but each callback runs inside the async context that issued the request, so the plugin identifies the request from its own `AsyncLocalStorage` scope rather than from the channel. Events for other plugins' traffic are ignored, and a `FormData` Files API upload that precedes a chat request is not mistaken for it.
+Those channels are process-wide, and the ones on the response side are also **socket-scoped**: on a pooled keep-alive connection they run inside the async context of whichever request first opened that socket. Reading the ambient context there attributes `headers` to an older, already-finished request — which is exactly why a naive implementation reports the server phase for the first request on a connection and `null` for every one after it. This plugin pairs each measurement with the undici request object at `undici:request:create` (which still runs in the caller's context) and looks every later diagnostic up by that identity, so pooled requests keep their phases. `test/host.test.mjs` asserts this on four sequential requests over one connection and fails if the pairing is reverted.
 
 Measurements are held in memory on the Host (last 100 per session, last 40 sessions) and served to the page over the product's own authenticated `/api` route. They are not persisted, so they do not survive a DSH restart.
 
@@ -107,6 +110,8 @@ The `name` resolves relative to the profile directory, so a relative path keeps 
 The `web` profile sets `patchReload: live`, so DSH watches `cordis.patch.yml` and re-composes the tree without a restart. **Reload the browser tab** — the client module graph is injected at page load, so an already-open page will not have the card.
 
 Then open **Settings → Plugins → Configuration** and look for **Model request gzip**.
+
+> **Updating an installed copy.** `patchReload: live` watches `cordis.patch.yml`, *not* plugin sources, so an edited Host half is only picked up by restarting `dsh web`. The browser bundle is different: it is re-read from disk, so a page reload is enough for the client half. Do both when in doubt.
 
 ## Configure
 

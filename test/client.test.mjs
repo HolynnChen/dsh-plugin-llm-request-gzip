@@ -69,6 +69,24 @@ function rerender(component, props) {
 /** Let pending promises settle, so a mount-time read can publish its result. */
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
+/**
+ * Run `body` with timers stubbed out. The timing view polls while mounted, and
+ * the React stand-in runs effects synchronously, so without this a real
+ * interval would outlive the test and keep the process alive.
+ */
+function withoutTimers(body) {
+	const realSetInterval = globalThis.setInterval;
+	const realClearInterval = globalThis.clearInterval;
+	globalThis.setInterval = () => 0;
+	globalThis.clearInterval = () => {};
+	try {
+		return body();
+	} finally {
+		globalThis.setInterval = realSetInterval;
+		globalThis.clearInterval = realClearInterval;
+	}
+}
+
 /** Execute the bundle against a stubbed loader and return its module exports. */
 function loadBundle() {
 	hooks.length = 0;
@@ -405,4 +423,60 @@ test("tolerates a ledger answer that carries no measurements", async () => {
 	} finally {
 		globalThis.fetch = realFetch;
 	}
+});
+
+test("renders the timing columns, the sizes and the compression delta", async () => {
+	const { exports } = loadBundle();
+	const harness = createClientContext();
+	exports.apply(harness.ctx);
+	const view = harness.registrationFor("conversation.view");
+	const injected = view.options.inject();
+	const measurements = [{
+		id: 1,
+		sessionId: "s1",
+		provider: "sg",
+		model: "deepseek-flash",
+		purpose: null,
+		status: "complete",
+		startedAt: 1700000000000,
+		prepareMs: 20,
+		sendMs: 30,
+		serverMs: 900,
+		ttftMs: 950,
+		generationMs: 2000,
+		totalMs: 3000,
+		inputTokens: 10,
+		outputTokens: 500,
+		tokensPerSecond: 250,
+		requestBytes: 1400000,
+		sentBytes: 400000,
+		responseBytes: 12345,
+		compressed: true,
+		attempts: 1
+	}];
+	const props = { ...injected, sessionId: "s1", loadTimings: async () => measurements };
+	withoutTimers(() => mount(view.component, props));
+	await flush();
+	const tree = withoutTimers(() => rerender(view.component, props));
+
+	const labels = [];
+	const texts = [];
+	const walk = (node) => {
+		if (node === null || node === undefined || typeof node !== "object") {
+			texts.push(node);
+			return;
+		}
+		if (Array.isArray(node)) {
+			for (const child of node) walk(child);
+			return;
+		}
+		if (node.type === "th") labels.push(node.children[0]);
+		walk(node.children);
+	};
+	walk(tree);
+
+	assert.deepEqual(labels, ["时间", "提供方 / 模型", "发送", "服务端", "首 token", "生成", "tok/s", "请求体", "响应体", "总计"]);
+	assert.ok(texts.includes("1.34MB→390.6KB"), `expected the compression delta, got ${JSON.stringify(texts.filter((t) => typeof t === "string"))}`);
+	assert.ok(texts.includes("12.1KB"), "expected the response size");
+	assert.ok(texts.includes("900ms"), "expected the server phase");
 });

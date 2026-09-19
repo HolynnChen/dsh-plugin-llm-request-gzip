@@ -377,7 +377,7 @@ test("measures a real request end to end from transport diagnostics", async () =
 		assert.equal(measured.status, "complete");
 		assert.equal(measured.attempts, 1);
 		assert.equal(measured.outputTokens, 40);
-		assert.equal(measured.compressed, null, "gzip is off for this provider");
+		assert.equal(measured.compressed, false, "gzip is off for this provider");
 
 		assert.ok(measured.sendMs !== null && measured.sendMs >= 0, "upload completion was observed");
 		assert.ok(measured.sendMs < plan.thinkMs, `a 50 KB upload finishes before the server answers (got ${measured.sendMs}ms)`);
@@ -386,6 +386,8 @@ test("measures a real request end to end from transport diagnostics", async () =
 		assert.ok(measured.generationMs >= plan.decodeMs - 40, `decode window is visible (got ${measured.generationMs}ms)`);
 		assert.ok(measured.totalMs >= plan.thinkMs + plan.firstTokenMs, "total covers every phase");
 		assert.ok(measured.tokensPerSecond > 0, "throughput is derived from the decode window");
+		assert.ok(measured.requestBytes > 0 && measured.sentBytes === measured.requestBytes, "the request size is recorded even without gzip");
+		assert.ok(measured.responseBytes > 0, "response bytes are counted from undici's chunks");
 
 		// A different session must not see this one's requests.
 		const other = await (await route.fetch(new Request("http://localhost/api/llm-request-gzip/timings?sessionId=session-2"))).json();
@@ -410,8 +412,8 @@ test("records the compression actually applied to a measured request", async () 
 		const route = harness.routes.find((candidate) => candidate.methods.includes("GET"));
 		const payload = await (await route.fetch(new Request("http://localhost/api/llm-request-gzip/timings?sessionId=s1"))).json();
 		const [measured] = payload.measurements;
-		assert.ok(measured.compressed !== null, "the compressed sizes are recorded");
-		assert.ok(measured.compressed.compressedBytes < measured.compressed.originalBytes);
+		assert.equal(measured.compressed, true, "the rewrite is reported as compression");
+		assert.ok(measured.sentBytes < measured.requestBytes, "the sent size is smaller than the serialized size");
 		assert.ok(measured.sendMs !== null, "timing still works alongside the gzip rewrite");
 	} finally {
 		server.close();
@@ -468,6 +470,38 @@ test("turning the timing preference on and off takes effect on the next request"
 		harness.setSection({ timing: false });
 		await drain();
 		assert.equal((await readLedger()).length, 1, "and stops again once disabled");
+	} finally {
+		server.close();
+		harness.disposeAll();
+	}
+});
+
+test("measures the server phase on every request of a pooled connection", async () => {
+	// The first request opens the socket; the rest reuse it, and undici runs
+	// their response diagnostics inside the FIRST request's async context. This
+	// is the regression test for attributing by request identity instead of by
+	// the ambient context.
+	const plan = { thinkMs: 20, firstTokenMs: 20, decodeMs: 30, chunks: 2, outputTokens: 5 };
+	const { server, base } = await sseServer(plan);
+	const harness = createHarness({});
+	try {
+		apply(harness.ctx);
+		const waterfall = harness.listeners.get("llm/stream")[0];
+		for (let index = 0; index < 4; index++) {
+			const inner = readChatStream(base, { messages: [{ role: "user", content: `turn ${index}` }] });
+			for await (const _chunk of waterfall({ provider: "alpha", model: "test-model", sessionId: "pooled" }, () => inner)) {
+				// Drain.
+			}
+		}
+
+		const route = harness.routes.find((candidate) => candidate.methods.includes("GET"));
+		const payload = await (await route.fetch(new Request("http://localhost/api/llm-request-gzip/timings?sessionId=pooled"))).json();
+		assert.equal(payload.measurements.length, 4);
+		for (const measured of payload.measurements) {
+			assert.ok(measured.serverMs !== null, `request ${measured.id} lost its server phase`);
+			assert.ok(measured.ttftMs !== null, `request ${measured.id} lost its TTFT`);
+			assert.ok(measured.responseBytes > 0, `request ${measured.id} counted no response bytes`);
+		}
 	} finally {
 		server.close();
 		harness.disposeAll();
