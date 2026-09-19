@@ -25,9 +25,22 @@ DSH 的两个 adapter（`dsh-llm-deepseek`、`dsh-llm-pi-ai`）都直接调用�
 
 ## 安装
 
+### 一行命令
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/HolynnChen/dsh-plugin-llm-request-gzip/main/install.sh | sh
+```
+
+脚本会把插件克隆到 `$DSH_HOME/profiles/web/plugins/llm-request-gzip`，并把装载条目追加到 `cordis.patch.yml`；
+若该条目已存在则保持原样，可重复执行。指定其它 profile：`DSH_HOME=... DSH_PROFILE=... sh`。
+
+之后**刷新浏览器页面**，打开 **设置 → 插件 → 配置**。
+
+### 手动安装
+
 `DSH_HOME` 默认为 `~/.dsh`，以下均以 `web` profile 为例。
 
-### 1. 把包放进 profile
+#### 1. 把包放进 profile
 
 ```bash
 git clone https://github.com/HolynnChen/dsh-plugin-llm-request-gzip.git \
@@ -37,7 +50,7 @@ git clone https://github.com/HolynnChen/dsh-plugin-llm-request-gzip.git \
 依赖解析无需额外安装步骤：Node 会从插件目录逐级向上查找，命中 profile 自己已 hoist 的 `node_modules`，
 `@deepseek-ai/schemastery` 就在那里。若你的目录结构不符合，在克隆目录内执行 `npm install --omit=dev` 即可。
 
-### 2. 在 profile 的 patch 层注册
+#### 2. 在 profile 的 patch 层注册
 
 `${DSH_HOME:-$HOME/.dsh}/profiles/web/cordis.patch.yml` 是一个顶层 YAML **数组**。追加：
 
@@ -52,7 +65,7 @@ git clone https://github.com/HolynnChen/dsh-plugin-llm-request-gzip.git \
 > 更喜欢用 pnpm 管理？`dsh plugin --profile web add github:HolynnChen/dsh-plugin-llm-request-gzip`
 > （需要 `pnpm` 在 `PATH` 上）会把它装进 profile，之后同一行可以写成 `name: 'dsh-plugin-llm-request-gzip'`。
 
-### 3. 刷新页面
+#### 3. 刷新页面
 
 `web` profile 的 `patchReload` 为 `live`，DSH 会监听 `cordis.patch.yml` 并实时重排组合，**不需要重启**。
 但必须**刷新浏览器页面**——客户端模块图是在页面加载时注入的，已打开的页面拿不到新的 bundle。
@@ -132,6 +145,7 @@ npm test
 
 | 文件 | 作用 |
 | --- | --- |
+| `install.sh` | 一行命令安装器：克隆到 profile 并注册到 `cordis.patch.yml` |
 | `lib/compress.js` | 决策核心：策略编译、endpoint 索引、归属解析、gzip 计划、header 改写。不依赖 Cordis / 全局对象 / zlib，可直接单测 |
 | `lib/index.js` | Host half：settings 段、`llm/stream` 归属、`globalThis.fetch` 补丁与还原 |
 | `lib/client.js` | 浏览器 half：设置卡片。CJS factory 合约，纯 JS，无 JSX / ESM |

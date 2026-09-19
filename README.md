@@ -24,9 +24,23 @@ Both shipped adapters (`dsh-llm-deepseek`, `dsh-llm-pi-ai`) call the global `fet
 
 ## Install
 
-`DSH_HOME` defaults to `~/.dsh`. Everything below assumes the `web` profile.
+### One command
 
-### 1. Put the package inside your profile
+```bash
+curl -fsSL https://raw.githubusercontent.com/HolynnChen/dsh-plugin-llm-request-gzip/main/install.sh | sh
+```
+
+It clones the plugin into `$DSH_HOME/profiles/web/plugins/llm-request-gzip` and appends its loader entry to
+`cordis.patch.yml`, leaving an already-registered entry alone — safe to re-run. Target another profile with
+`DSH_HOME=... DSH_PROFILE=... sh`.
+
+Then **reload the browser tab** and open **Settings → Plugins → Configuration**.
+
+### Manual install
+
+`DSH_HOME` defaults to `~/.dsh`; the steps below assume the `web` profile.
+
+#### 1. Put the package inside your profile
 
 ```bash
 git clone https://github.com/HolynnChen/dsh-plugin-llm-request-gzip.git \
@@ -35,7 +49,7 @@ git clone https://github.com/HolynnChen/dsh-plugin-llm-request-gzip.git \
 
 No install step is needed for dependency resolution: Node walks up from the plugin directory into the profile's own hoisted `node_modules`, where `@deepseek-ai/schemastery` already lives. If that does not hold for your layout, run `npm install --omit=dev` inside the cloned directory.
 
-### 2. Register it in the profile's patch layer
+#### 2. Register it in the profile's patch layer
 
 `${DSH_HOME:-$HOME/.dsh}/profiles/web/cordis.patch.yml` is a top-level YAML **array** of patch entries. Append:
 
@@ -49,7 +63,7 @@ The `name` resolves relative to the profile directory, so a relative path keeps 
 
 > Prefer pnpm-managed installs? `dsh plugin --profile web add github:HolynnChen/dsh-plugin-llm-request-gzip` (requires `pnpm` on `PATH`) installs it into the profile, after which the same entry can use `name: 'dsh-plugin-llm-request-gzip'`.
 
-### 3. Reload the page
+#### 3. Reload the page
 
 The `web` profile sets `patchReload: live`, so DSH watches `cordis.patch.yml` and re-composes the tree without a restart. **Reload the browser tab** — the client module graph is injected at page load, so an already-open page will not have the card.
 
@@ -117,6 +131,7 @@ npm test
 
 | File | Role |
 | --- | --- |
+| `install.sh` | One-command installer: clones the package into the profile and registers it in `cordis.patch.yml`. |
 | `lib/compress.js` | Decision core: policy compilation, endpoint index, attribution resolution, gzip plan, header rewriting. No Cordis, globals, or zlib, so it is directly unit-testable. |
 | `lib/index.js` | Host half: settings section, `llm/stream` attribution, `globalThis.fetch` patch and restore. |
 | `lib/client.js` | Browser half: the settings card. Plain CJS factory contract, no JSX or ESM syntax. |
