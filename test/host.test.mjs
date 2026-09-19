@@ -820,21 +820,29 @@ test("pre-transmission composes with gzip instead of replacing it", async () => 
 	}
 });
 
-test("destroys the whole pool when the step ends the turn", async () => {
+test("keeps the pool after a turn ends, and lets idleness expire it", async () => {
+	// A finished conversation is often just a pause: the next question repeats the
+	// same history, so the members are worth keeping. They must still go away on
+	// their own when nothing happens, or an abandoned conversation would sit on
+	// connections forever.
 	const { close, requests, base } = await recordingServer();
-	const harness = createHarness({ providers: { alpha: { prewarm: true } }, prewarmPoolSize: 3 });
+	const harness = createHarness({ providers: { alpha: { prewarm: true } }, prewarmPoolSize: 2, prewarmHoldMs: 2000 });
+	const held = () => requests.filter((entry) => !entry.completed && !entry.aborted);
 	try {
 		apply(harness.ctx);
 		await runStep(harness, base, "s1", [{ role: "user", content: "hello" }], "stop");
+		assert.ok(await waitFor(() => held().length === 2), "the pool is held at the turn boundary");
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		assert.equal(held().length, 2, "and it is still held afterwards, waiting for a follow-up");
 
-		assert.ok(await waitFor(() => requests.length === 4), "the call opened the pool");
-		assert.ok(await waitFor(() => requests.slice(1).every((entry) => entry.aborted === true || entry.completed === true)), "the pool was destroyed");
-		assert.equal(requests.filter((entry) => !entry.completed && !entry.aborted).length, 0, "nothing is left held");
+		// Nothing has happened, so the hold timer owns it now.
+		assert.ok(await waitFor(() => held().length === 0, 4000), "idleness releases it");
 	} finally {
 		harness.disposeAll();
 		close();
 	}
 });
+
 
 test("bounds the total number of held requests across conversations", async () => {
 	const { close, requests, base } = await recordingServer();
@@ -989,27 +997,6 @@ test("keeps a separate pool for every agent, even with identical histories", asy
 	}
 });
 
-test("reads queued input from the agent's own session, not the whole tree", async () => {
-	const { close, requests, base } = await recordingServer();
-	// Only the parent has something queued; the child is finishing its last turn.
-	const harness = createHarness({ providers: { alpha: { prewarm: true } }, prewarmPoolSize: 1 }, { pendingInput: ["session-parent"] });
-	const held = () => requests.filter((entry) => !entry.completed && !entry.aborted);
-	try {
-		apply(harness.ctx);
-		await runStep(harness, base, "session-parent", [{ role: "user", content: "parent" }], "stop");
-		assert.ok(await waitFor(() => held().length === 1), "the parent's pool survives its turn boundary");
-
-		const parentMember = held()[0];
-		await runStep(harness, base, "session-child", [{ role: "user", content: "child" }], "stop");
-		// The child has nothing queued, so its pool is released at its turn
-		// boundary — and the parent's, which does, is left untouched.
-		assert.ok(await waitFor(() => held().length === 1), "only the child's pool was released");
-		assert.equal(held()[0], parentMember, "the survivor is the parent's own request");
-	} finally {
-		harness.disposeAll();
-		close();
-	}
-});
 
 test("does not give up on an endpoint for one transient failure", async () => {
 	// The held request — the second one — answers 503. A transient failure must
