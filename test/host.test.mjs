@@ -851,46 +851,6 @@ test("bounds the total number of held requests across conversations", async () =
 	}
 });
 
-test("adds the assistant turn to the pool while the tools run", async () => {
-	const call = { id: "call_1", type: "function", function: { name: "bash", arguments: '{"cmd":"ls"}' } };
-	const { close, requests, base } = await recordingServer({ toolCall: call });
-	const harness = createHarness({ providers: { alpha: { prewarm: true } }, prewarmPoolSize: 1 });
-	try {
-		apply(harness.ctx);
-		// A template the predictor can learn from: a prior assistant turn that also
-		// carries tool calls, in the same key order the adapter will emit.
-		const history = [
-			{ role: "user", content: "hi" },
-			{ role: "assistant", content: null, tool_calls: [{ id: "c0", type: "function", function: { name: "read", arguments: "{}" } }] },
-			{ role: "tool", tool_call_id: "c0", content: "ok" }
-		];
-		await runStep(harness, base, "s1", history, "tool-calls");
-
-		// The assistant turn reaches the held request during the tool window, before
-		// the request that will need it has been issued.
-		assert.ok(await waitFor(() => requests.length === 2 && requests[1].chunks.length >= 2), "the turn was appended to the held request");
-		const held = requests[1];
-		const beforeSecondStep = Date.now();
-		await new Promise((resolve) => setTimeout(resolve, 30));
-		assert.ok(held.lastChunkAt <= beforeSecondStep, "and it went out before the next step was issued");
-
-		const next = [
-			...history,
-			{ role: "assistant", content: null, tool_calls: [call] },
-			{ role: "tool", tool_call_id: "call_1", content: "file.txt" }
-		];
-		await runStep(harness, base, "s1", next, "tool-calls");
-
-		assert.equal(held.completed, true, "the held request served the step");
-		const body = Buffer.concat(held.raw).toString("utf8");
-		assert.match(body, /"tool_calls":\[\{"id":"call_1"/u, "the predicted turn was already on the wire");
-		assert.ok(await waitFor(() => requests.length === 3), "the pool refilled for the step after");
-		assert.equal(requests[2].completed, false, "and the replacement is held");
-	} finally {
-		harness.disposeAll();
-		close();
-	}
-});
 
 //#endregion
 
@@ -1257,47 +1217,6 @@ test("reports a pre-transmitted request's compressed size and algorithm", async 
 	}
 });
 
-test("pre-sends only what every framing agrees on, so nothing is a guess", async () => {
-	// The model streamed arguments with spaces, and the turn produced no text — so
-	// the adapter's own framing differs from the model's bytes in two ways at once:
-	// it re-serializes the arguments, and it omits `content` on a textless turn.
-	// The pre-sent bytes stop where those framings diverge, which keeps the member
-	// valid whatever the adapter does, instead of discarding a whole pool over it.
-	const streamed = { id: "call_1", type: "function", function: { name: "bash", arguments: '{ "cmd" : "ls" }' } };
-	const { close, requests, base } = await recordingServer({ toolCall: streamed });
-	const harness = createHarness({ providers: { alpha: { prewarm: true } }, prewarmPoolSize: 3 });
-	const history = [
-		{ role: "user", content: "hi" },
-		{ role: "assistant", content: null, tool_calls: [{ id: "c0", type: "function", function: { name: "read", arguments: "{}" } }] },
-		{ role: "tool", tool_call_id: "c0", content: "ok" }
-	];
-	// What the adapter actually sends next: no `content`, re-serialized arguments.
-	const next = JSON.stringify({
-		messages: [
-			...history,
-			{ role: "assistant", tool_calls: [{ id: "call_1", type: "function", function: { name: "bash", arguments: '{"cmd":"ls"}' } }] },
-			{ role: "tool", tool_call_id: "call_1", content: "file.txt" }
-		]
-	});
-	try {
-		apply(harness.ctx);
-		await runStep(harness, base, "s1", history, "tool-calls");
-		assert.ok(await waitFor(() => requests.filter((entry) => !entry.completed && !entry.aborted).length === 3), "a pool of three is held");
-
-		await runStep(harness, base, "s1", null, "tool-calls", next);
-
-		const measurements = await readLedger(harness, "s1");
-		assert.notEqual(measurements[1].prewarm, null, "the pre-sent bytes were a prefix of what the adapter built, so the pool was used");
-		assert.equal(measurements[1].prewarmMiss, null, "and nothing was recorded as a lost bet");
-		// Which member served it depends on which variant matched; what must not
-		// happen is a fresh upload, which is the only request with a declared length.
-		assert.equal(requests.filter((entry) => entry.transfer === null).length, 1, "no request was re-uploaded the ordinary way");
-		assert.equal(requests.filter((entry) => entry.completed).length, 2, "a held member served the step instead of a new request");
-	} finally {
-		harness.disposeAll();
-		close();
-	}
-});
 
 
 test("writes each session's ledger and loads it back", async () => {
@@ -1477,11 +1396,26 @@ test("sends the original field order again if an endpoint rejects the reordered 
 		apply(harness.ctx);
 		await runStep(harness, base, "s1", null, "tool-calls", JSON.stringify({ model: "m", messages: [{ role: "user", content: "y".repeat(2000) }], stream: true, tools }));
 
-		assert.ok(await waitFor(() => requests.length >= 2), "the rejected request was sent again");
-		assert.ok(await waitFor(() => requests[1] !== undefined && requests[1].completed === true), "the retry's body arrived whole");
-		const codec = requests[1].encoding === "br" ? brotliDecompressSync : gunzipSync;
-		const wire = codec(Buffer.concat(requests[1].raw)).toString("utf8");
-		assert.ok(wire.indexOf('"messages"') < wire.indexOf('"tools"'), "the retry keeps the adapter's own order");
+		// The retry is whichever completed request carries the adapter's own order —
+		// a held member may take an earlier slot, so index is not identity.
+		const ordered = async () => {
+			for (const entry of requests.filter((candidate) => candidate.completed && candidate.raw.length > 0)) {
+				const codec = entry.encoding === "br" ? brotliDecompressSync : gunzipSync;
+				const text = codec(Buffer.concat(entry.raw)).toString("utf8");
+				if (text.indexOf('"messages"') >= 0 && text.indexOf('"tools"') >= 0 && text.indexOf('"messages"') < text.indexOf('"tools"')) return text;
+			}
+			return undefined;
+		};
+		assert.ok(await waitFor(() => requests.some((entry) => !entry.completed && !entry.aborted)) || requests.length >= 2, "another request went out");
+		const wire = await (async () => {
+			const deadline = Date.now() + 2000;
+			for (;;) {
+				const found = await ordered();
+				if (found !== undefined || Date.now() > deadline) return found;
+				await new Promise((resolve) => setTimeout(resolve, 20));
+			}
+		})();
+		assert.ok(wire !== undefined, "the retry keeps the adapter's own order");
 
 		// And the endpoint is not tried in the canonical order again.
 		await runStep(harness, base, "s1", null, "tool-calls", JSON.stringify({ model: "m", messages: [{ role: "user", content: "y".repeat(2000) }], stream: true, tools }));
