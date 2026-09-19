@@ -351,11 +351,21 @@ async function sseServer(plan) {
  * `StreamChunk`s. Only the provider-specific logic is absent, which is the
  * point — the plugin measures the transport, not the adapter.
  */
+/** A body the test already serialized itself, sent verbatim. */
+class SerializedBody {
+	constructor(text) {
+		this.text = text;
+	}
+	toString() {
+		return this.text;
+	}
+}
+
 async function* readChatStream(base, body, finishKind = "stop") {
 	const response = await fetch(`${base}/chat/completions`, {
 		method: "POST",
 		headers: { "content-type": "application/json", accept: "text/event-stream" },
-		body: JSON.stringify(body)
+		body: body instanceof SerializedBody ? body.toString() : JSON.stringify(body)
 	});
 	const decoder = new TextDecoder();
 	let buffer = "";
@@ -681,9 +691,9 @@ async function recordingServer(plan = {}) {
 }
 
 /** Drive one complete model step for `messages`, as the agent loop would. */
-async function runStep(harness, base, sessionId, messages, finishKind = "stop") {
+async function runStep(harness, base, sessionId, messages, finishKind = "stop", rawBody) {
 	const waterfall = harness.listeners.get("llm/stream")[0];
-	const inner = readChatStream(base, { messages }, finishKind);
+	const inner = readChatStream(base, rawBody === undefined ? { messages } : new SerializedBody(rawBody), finishKind);
 	const received = [];
 	for await (const chunk of waterfall({ provider: "alpha", model: "test-model", sessionId }, () => inner)) received.push(chunk);
 	return received;
@@ -1182,6 +1192,48 @@ test("reports a pre-transmitted request's compressed size and algorithm", async 
 		assert.equal(measurement.encoding, "br", "and it names the algorithm the member used");
 		assert.equal(measurement.compressed, true, "and it does not read as uncompressed");
 		assert.ok(measurement.sentBytes < measurement.requestBytes, "the wire size is smaller than the body");
+	} finally {
+		harness.disposeAll();
+		close();
+	}
+});
+
+test("learns the adapter's framing instead of betting the pool on a guess", async () => {
+	// The model streamed arguments with spaces, and the turn produced no text — so
+	// the adapter's own framing differs from the model's bytes in two ways at once:
+	// it re-serializes the arguments, and it omits `content` on a textless turn.
+	// The pool carries a variant each, so the request itself picks the right one
+	// rather than the whole pool being discarded over a guess.
+	const streamed = { id: "call_1", type: "function", function: { name: "bash", arguments: '{ "cmd" : "ls" }' } };
+	const { close, requests, base } = await recordingServer({ toolCall: streamed });
+	const harness = createHarness({ providers: { alpha: { prewarm: true } }, prewarmPoolSize: 3 });
+	const history = [
+		{ role: "user", content: "hi" },
+		{ role: "assistant", content: null, tool_calls: [{ id: "c0", type: "function", function: { name: "read", arguments: "{}" } }] },
+		{ role: "tool", tool_call_id: "c0", content: "ok" }
+	];
+	// What the adapter actually sends next: no `content`, re-serialized arguments.
+	const next = JSON.stringify({
+		messages: [
+			...history,
+			{ role: "assistant", tool_calls: [{ id: "call_1", type: "function", function: { name: "bash", arguments: '{"cmd":"ls"}' } }] },
+			{ role: "tool", tool_call_id: "call_1", content: "file.txt" }
+		]
+	});
+	try {
+		apply(harness.ctx);
+		await runStep(harness, base, "s1", history, "tool-calls");
+		assert.ok(await waitFor(() => requests.filter((entry) => !entry.completed && !entry.aborted).length === 3), "a pool of three is held");
+
+		await runStep(harness, base, "s1", null, "tool-calls", next);
+
+		const measurements = await readLedger(harness, "s1");
+		assert.notEqual(measurements[1].prewarm, null, "one of the variants matched, so the pool was used");
+		assert.equal(measurements[1].prewarmMiss, null, "and nothing was recorded as a lost bet");
+		// Which member served it depends on which variant matched; what must not
+		// happen is a fresh upload, which is the only request with a declared length.
+		assert.equal(requests.filter((entry) => entry.transfer === null).length, 1, "no request was re-uploaded the ordinary way");
+		assert.equal(requests.filter((entry) => entry.completed).length, 2, "a held member served the step instead of a new request");
 	} finally {
 		harness.disposeAll();
 		close();

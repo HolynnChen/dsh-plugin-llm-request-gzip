@@ -6,7 +6,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { headersMatch, isShapeRejection, messagesPrefixEnd, prewarmPrefix } from "../lib/prewarm.js";
+import { headersMatch, isShapeRejection, messagesPrefixEnd, predictAssistantIncrement, prewarmPrefix } from "../lib/prewarm.js";
 
 /** One OpenAI-compatible body with a two-message history and trailing fields. */
 const BODY = JSON.stringify({
@@ -83,4 +83,32 @@ test("only shape rejections are worth resending", () => {
 	assert.equal(isShapeRejection(400), false, "a real provider answer; the adapter owns it");
 	assert.equal(isShapeRejection(429), false, "resending would duplicate a rate-limited call");
 	assert.equal(isShapeRejection(200), false);
+});
+
+test("the framing variants differ exactly where adapters do", () => {
+	const body = JSON.stringify({
+		messages: [
+			{ role: "user", content: "hi" },
+			{ role: "assistant", content: "text", tool_calls: [{ id: "a", type: "function", function: { name: "read", arguments: '{"p":1}' } }] }
+		]
+	});
+	const assistant = { text: "", toolCalls: [{ id: "b", name: "bash", arguments: '{ "cmd" : "ls" }' }] };
+
+	// An adapter that re-serializes the arguments and keeps a (empty) content.
+	const reserialized = predictAssistantIncrement(body, assistant, "reserialized");
+	assert.match(reserialized.appended, /"content":"",/u);
+	assert.match(reserialized.appended, /"arguments":"\{\\"cmd\\":\\"ls\\"\}"/u, "the arguments are re-serialized");
+
+	// One that re-serializes and omits `content` on a turn with no text.
+	const terse = predictAssistantIncrement(body, assistant, "terse");
+	assert.doesNotMatch(terse.appended, /"content"/u);
+	assert.match(terse.appended, /"arguments":"\{\\"cmd\\":\\"ls\\"\}"/u);
+
+	// One that passes the model's own bytes through.
+	const raw = predictAssistantIncrement(body, assistant, "raw");
+	assert.match(raw.appended, /\{ \\"cmd\\" : \\"ls\\" \}/u, "the model's own bytes survive");
+
+	// All three place the turn at the same point in the body.
+	assert.equal(reserialized.from, terse.from);
+	assert.equal(terse.from, raw.from);
 });
