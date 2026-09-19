@@ -709,7 +709,7 @@ test("shows a dash, not 0B, when a response was never attributed", async () => {
 	assert.ok(!texts.includes("0B"), "and never claims a zero-byte response");
 });
 
-test("lays the providers out as one flat grid, four cells per route", async () => {
+test("holds the headings and every provider in one grid", async () => {
 	const { exports } = loadBundle();
 	const harness = createClientContext();
 	exports.apply(harness.ctx);
@@ -731,21 +731,24 @@ test("lays the providers out as one flat grid, four cells per route", async () =
 		return found;
 	};
 
-	// A grid whose first column is a fixed-width switch cell is a provider grid.
-	const providerGrids = collect(body, (node) => typeof node.props?.style?.gridTemplateColumns === "string" && node.props.style.gridTemplateColumns.startsWith("34px"));
-	assert.equal(providerGrids.length, 2, "a heading row plus one grid for the shared endpoint");
-	const [head, grid] = providerGrids;
-	assert.equal(head.children.length, 4, "four column headings");
-	assert.deepEqual(head.children.map((cell) => cell.children[0]), ["gzip", "提供方", "预传输", "最小体积"]);
+	// ONE grid for the whole provider section. Separate grids would each resolve
+	// their `max-content` tracks from their own content, which is exactly what
+	// pulled the headings off the columns they label.
+	const grids = collect(body, (node) => typeof node.props?.style?.gridTemplateColumns === "string" && node.props.style.gridTemplateColumns.startsWith("34px"));
+	assert.equal(grids.length, 1, "headings and rows share one grid");
+	const [grid] = grids;
+	assert.deepEqual(grid.children.slice(0, 4).map((cell) => cell.children[0]), ["gzip", "提供方", "预传输", "最小体积"], "four headings, first in the grid");
 
-	// Four cells per route, all direct children — that is what keeps every column
-	// on one axis no matter how long a provider name is.
+	// Each route contributes the same four cells, after a group label that spans
+	// the grid (so it cannot disturb a column).
+	const cells = grid.children.slice(4).filter((child) => child.type !== "div");
 	const routes = (await ctl.read()).routes;
-	assert.equal(grid.children.length, routes.length * 4, "four cells per route");
-	for (let index = 0; index < grid.children.length; index += 4) {
-		const cells = grid.children.slice(index, index + 4);
-		assert.deepEqual(cells.map((cell) => cell.type), ["input", "span", "input", "input"], "switch, identity, switch, threshold");
+	assert.equal(cells.length, routes.length * 4, "four cells per route");
+	for (let index = 0; index < cells.length; index += 4) {
+		assert.deepEqual(cells.slice(index, index + 4).map((cell) => cell.type), ["input", "span", "input", "input"], "switch, identity, switch, threshold");
 	}
+	const spanning = grid.children.slice(4).filter((child) => child.type === "div");
+	assert.ok(spanning.every((cell) => cell.props.style.gridColumn === "1 / -1"), "group labels span every column");
 });
 
 test("keeps the plugin-level controls next to their labels", async () => {
