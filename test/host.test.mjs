@@ -40,7 +40,7 @@ const NEIGHBOUR_NAMESPACES = {
  * @param section - the user section stored for this plugin's namespace.
  * @returns the context, the recorded listeners, and an effect disposer runner.
  */
-function createHarness(initialSection = {}) {
+function createHarness(initialSection = {}, options = {}) {
 	let section = initialSection;
 	const listeners = new Map();
 	const effects = [];
@@ -76,6 +76,12 @@ function createHarness(initialSection = {}) {
 		get(name) {
 			if (name === "settings") return settings;
 			if (name === "llm") return { listConfigurableProviders: () => DIRECTORY };
+			// A live agent whose inbox reports queued work, when a test asks for one.
+			if (name === "agents") {
+				return options.pendingInput === true
+					? { get: () => ({ inbox: { hasPending: true } }) }
+					: undefined;
+			}
 			return undefined;
 		},
 		on(event, listener) {
@@ -835,3 +841,51 @@ test("adds the assistant turn to the pool while the tools run", async () => {
 //#endregion
 
 
+
+test("rebuilds the pool from the new prefix after a mismatch", async () => {
+	const { close, requests, base } = await recordingServer();
+	const harness = createHarness({ providers: { alpha: { prewarm: true } }, prewarmPoolSize: 2 });
+	const held = () => requests.filter((entry) => !entry.completed && !entry.aborted);
+	try {
+		apply(harness.ctx);
+		await runStep(harness, base, "s1", [{ role: "user", content: "turn one" }], "tool-calls");
+		assert.ok(await waitFor(() => held().length === 2), "a pool of two is held");
+
+		// A rewritten history: nothing in the pool continues it.
+		const rewritten = [{ role: "user", content: "a different history" }];
+		await runStep(harness, base, "s1", rewritten, "tool-calls");
+		assert.equal(requests[1].aborted, true, "the old pool is abandoned");
+		assert.equal(requests[2].aborted, true);
+		// Re-opened from the prefix that was just captured, not left empty.
+		assert.ok(await waitFor(() => held().length === 2), "a fresh pool is held for the new history");
+
+		await runStep(harness, base, "s1", [...rewritten, { role: "assistant", content: "ok" }], "tool-calls");
+		const measurements = await readLedger(harness, "s1");
+		assert.notEqual(measurements[2].prewarm, null, "the rebuilt pool serves the following step");
+	} finally {
+		harness.disposeAll();
+		close();
+	}
+});
+
+test("keeps the pool across a turn boundary while input is queued", async () => {
+	const { close, requests, base } = await recordingServer();
+	const harness = createHarness({ providers: { alpha: { prewarm: true } }, prewarmPoolSize: 2 }, { pendingInput: true });
+	const held = () => requests.filter((entry) => !entry.completed && !entry.aborted);
+	try {
+		apply(harness.ctx);
+		// A turn that ends `stop`, which normally releases the pool outright.
+		await runStep(harness, base, "s1", [{ role: "user", content: "hi" }], "stop");
+		assert.ok(await waitFor(() => held().length === 2), "the pool is held");
+		await new Promise((resolve) => setTimeout(resolve, 40));
+		assert.equal(held().length, 2, "and it survives the turn boundary because a turn is already queued");
+
+		// The queued turn repeats this history, so the pool serves it.
+		await runStep(harness, base, "s1", [{ role: "user", content: "hi" }, { role: "assistant", content: "hello" }, { role: "user", content: "next" }], "stop");
+		const measurements = await readLedger(harness, "s1");
+		assert.notEqual(measurements[1].prewarm, null, "the queued turn reused the pool");
+	} finally {
+		harness.disposeAll();
+		close();
+	}
+});
