@@ -619,7 +619,9 @@ async function recordingServer(plan = {}) {
 			completed: false,
 			aborted: false,
 			encoding: req.headers["content-encoding"] ?? null,
-			transfer: req.headers["transfer-encoding"] ?? null
+			transfer: req.headers["transfer-encoding"] ?? null,
+			// Kept so a test can drop a held connection the way a gateway might.
+			socket: req.socket
 		};
 		requests.push(record);
 		req.on("data", (chunk) => {
@@ -1092,5 +1094,29 @@ test("records which algorithm compressed each request", async () => {
 		transport.restore();
 		gzipHarness.disposeAll();
 		brHarness.disposeAll();
+	}
+});
+
+test("records a claimed pre-transmission that died in the handover", async () => {
+	const { close, requests, base } = await recordingServer();
+	const harness = createHarness({ providers: { alpha: { prewarm: true } }, prewarmPoolSize: 1 });
+	const history = [{ role: "user", content: "turn one" }];
+	try {
+		apply(harness.ctx);
+		await runStep(harness, base, "s1", history, "tool-calls");
+		assert.ok(await waitFor(() => requests.filter((entry) => !entry.completed && !entry.aborted).length === 1), "a request is held");
+
+		// The gateway drops the held connection before the increment is written,
+		// which the member cannot show until the handover actually happens.
+		for (const entry of requests) if (!entry.completed) entry.socket?.destroy();
+		await runStep(harness, base, "s1", [...history, { role: "assistant", content: "ok" }], "tool-calls");
+
+		const measurements = await readLedger(harness, "s1");
+		assert.equal(measurements[1].prewarm, null, "the request was not served from the pool");
+		assert.equal(measurements[1].prewarmMiss, "failed", "and the row says the handover is why");
+		assert.ok(measurements[1].attempts >= 2, "the request went out the ordinary way instead");
+	} finally {
+		harness.disposeAll();
+		close();
 	}
 });
