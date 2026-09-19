@@ -1439,3 +1439,57 @@ test("reports the increment on the wire, and what it is made of", async () => {
 		close();
 	}
 });
+
+test("moves the fixed fields after messages, so the prefix covers them", async () => {
+	const { close, requests, base } = await recordingServer();
+	const harness = createHarness({ providers: { alpha: { enabled: true, minBytes: 0, prewarm: true } }, prewarmPoolSize: 2 });
+	const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object" } } }];
+	const history = [{ role: "user", content: "y".repeat(2000) }];
+	const decode = (entry) => (entry.encoding === "br" ? brotliDecompressSync : gunzipSync)(Buffer.concat(entry.raw)).toString("utf8");
+	try {
+		apply(harness.ctx);
+		await runStep(harness, base, "s1", null, "tool-calls", JSON.stringify({ model: "m", messages: history, stream: true, tools }));
+		await runStep(harness, base, "s1", null, "tool-calls", JSON.stringify({ model: "m", messages: [...history, { role: "assistant", content: "ok" }], stream: true, tools }));
+
+		// The body that went out carries the fixed fields first, with the messages
+		// untouched.
+		const first = decode(requests[0]);
+		assert.ok(first.indexOf('"tools"') < first.indexOf('"messages"'), "the adapter's order is replaced by one the prefix can use");
+		assert.deepEqual(JSON.parse(first).messages, history, "and the messages themselves are untouched");
+
+		// The step that followed was served from the pool, and almost nothing was
+		// left to write: the tool schemas now travel inside the prefix.
+		const rows = await readLedger(harness, "s1");
+		assert.notEqual(rows[1].prewarm, null, "the reordered body still matches a held member");
+		assert.ok(rows[1].prewarm.tailBytes <= 4, `only the closing brackets remain after messages, saw ${rows[1].prewarm.tailBytes}`);
+		assert.ok(rows[1].prewarm.deltaBytes < 2000, `the increment is just the new turn, saw ${rows[1].prewarm.deltaBytes}`);
+	} finally {
+		harness.disposeAll();
+		close();
+	}
+});
+
+test("sends the original field order again if an endpoint rejects the reordered body", async () => {
+	const { close, requests, base } = await recordingServer({ failAt: 1, status: 400 });
+	const harness = createHarness({ providers: { alpha: { enabled: true, minBytes: 0, prewarm: true } }, prewarmPoolSize: 1 });
+	const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object" } } }];
+	try {
+		apply(harness.ctx);
+		await runStep(harness, base, "s1", null, "tool-calls", JSON.stringify({ model: "m", messages: [{ role: "user", content: "y".repeat(2000) }], stream: true, tools }));
+
+		assert.ok(await waitFor(() => requests.length >= 2), "the rejected request was sent again");
+		await waitFor(() => requests[1].completed === true, 500);
+		const codec = requests[1].encoding === "br" ? brotliDecompressSync : gunzipSync;
+		const wire = codec(Buffer.concat(requests[1].raw)).toString("utf8");
+		assert.ok(wire.indexOf('"messages"') < wire.indexOf('"tools"'), "the retry keeps the adapter's own order");
+
+		// And the endpoint is not tried in the canonical order again.
+		await runStep(harness, base, "s1", null, "tool-calls", JSON.stringify({ model: "m", messages: [{ role: "user", content: "y".repeat(2000) }], stream: true, tools }));
+		const later = requests.filter((entry) => entry.completed && entry.encoding !== null).at(-1);
+		const laterWire = (later.encoding === "br" ? brotliDecompressSync : gunzipSync)(Buffer.concat(later.raw)).toString("utf8");
+		assert.ok(laterWire.indexOf('"messages"') < laterWire.indexOf('"tools"'), "the refusal is remembered");
+	} finally {
+		harness.disposeAll();
+		close();
+	}
+});
