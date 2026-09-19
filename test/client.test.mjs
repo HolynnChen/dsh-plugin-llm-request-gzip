@@ -660,3 +660,34 @@ test("fills the panel by proportional column shares instead of by content", asyn
 	assert.equal(Math.round(shares.reduce((sum, share) => sum + share, 0)), 100, "the shares exhaust the width");
 	assert.ok(Math.max(...shares) <= 30, "no column is handed a runaway share");
 });
+
+test("shows a dash, not 0B, when a response was never attributed", async () => {
+	const { exports } = loadBundle();
+	const harness = createClientContext();
+	exports.apply(harness.ctx);
+	const view = harness.registrationFor("conversation.view");
+	const props = {
+		...view.options.inject(),
+		sessionId: "s1",
+		loadTimings: async () => [{ ...measurement(), responseBytes: null }]
+	};
+	withoutTimers(() => mount(view.component, props));
+	await flush();
+	const tree = withoutTimers(() => rerender(view.component, props));
+
+	const texts = [];
+	const walk = (node) => {
+		if (node === null || typeof node !== "object") {
+			texts.push(node);
+			return;
+		}
+		if (Array.isArray(node)) {
+			for (const child of node) walk(child);
+			return;
+		}
+		walk(node.children);
+	};
+	walk(tree);
+	assert.ok(texts.includes("–"), "the response column reports the missing attribution");
+	assert.ok(!texts.includes("0B"), "and never claims a zero-byte response");
+});
