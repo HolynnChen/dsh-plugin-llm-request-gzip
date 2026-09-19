@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-model-request-accelerator",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Gzip request-body compression and request timing breakdown for DeepSeek Harness model calls",
   "type": "module",
   "license": "MIT",
@@ -54,7 +54,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test test/host.test.mjs test/client.test.mjs test/timing.test.mjs test/prewarm.test.mjs"
+    "test": "node --test test/host.test.mjs test/client.test.mjs test/timing.test.mjs test/prewarm.test.mjs test/version.test.mjs"
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.2",

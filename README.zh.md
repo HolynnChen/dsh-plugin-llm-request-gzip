@@ -225,6 +225,12 @@ model-request-accelerator: sg request compressed 3043 -> 79 bytes
 也没有 zlib、`Buffer` 或 `CompressionStream`。它既无法压缩请求体，也够不到适配器实际使用的那个 realm，
 所以本功能必须由文件加载的持久化 Cordis 插件承担。
 
+## 更新
+
+插件带三段式版本号（`package.json`，当前 `1.0.0`），设置卡片里会显示它并附一个按钮。点 **检查更新** 会让 Host 去读取仓库 `main` 分支上发布的版本并比较；当远端更新时，按钮变成 **更新到 X**。
+
+更新动作就是在插件自己的目录里执行 fast-forward 拉取——和安装脚本做的事一样——不经 shell 且带超时。两侧只要有一侧版本号无法解析，就绝不视为「更新」，因此一个笔误不会造成降级。**更新之后，插件仍然运行旧代码，直到重启 `dsh web`**；卡片上会写明这一点。
+
 ## 卸载
 
 删除 `cordis.patch.yml` 中的 `model-request-accelerator` 条目（以及克隆的目录）。改动实时生效，刷新页面后卡片消失。

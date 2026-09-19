@@ -425,7 +425,7 @@ test("measures a real request end to end from transport diagnostics", async () =
 		assert.equal(received.filter((chunk) => chunk.type === "text-delta").length, 4, "the stream is passed through untouched");
 		assert.equal(received.at(-1).type, "finish");
 
-		const route = harness.routes.find((candidate) => candidate.methods.includes("GET"));
+		const route = harness.routes.find((candidate) => candidate.path === "/api/model-request-accelerator/timings");
 		assert.ok(route !== undefined, "the timing route is registered");
 		assert.equal(route.path, "/api/model-request-accelerator/timings");
 		const answer = await route.fetch(new Request("http://localhost/api/model-request-accelerator/timings?sessionId=session-1"));
@@ -471,7 +471,7 @@ test("records the compression actually applied to a measured request", async () 
 		for await (const _chunk of waterfall({ provider: "alpha", model: "test-model", sessionId: "s1" }, () => inner)) {
 			// Drain.
 		}
-		const route = harness.routes.find((candidate) => candidate.methods.includes("GET"));
+		const route = harness.routes.find((candidate) => candidate.path === "/api/model-request-accelerator/timings");
 		const payload = await (await route.fetch(new Request("http://localhost/api/model-request-accelerator/timings?sessionId=s1"))).json();
 		const [measured] = payload.measurements;
 		assert.equal(measured.compressed, true, "the rewrite is reported as compression");
@@ -497,7 +497,7 @@ test("records nothing while the timing preference is off, but still applies gzip
 			// Drain.
 		}
 
-		const route = harness.routes.find((candidate) => candidate.methods.includes("GET"));
+		const route = harness.routes.find((candidate) => candidate.path === "/api/model-request-accelerator/timings");
 		const payload = await (await route.fetch(new Request("http://localhost/api/model-request-accelerator/timings?sessionId=s1"))).json();
 		assert.deepEqual(payload.measurements, [], "a switched-off ledger stores nothing");
 	} finally {
@@ -519,7 +519,7 @@ test("turning the timing preference on and off takes effect on the next request"
 				// Drain.
 			}
 		};
-		const route = harness.routes.find((candidate) => candidate.methods.includes("GET"));
+		const route = harness.routes.find((candidate) => candidate.path === "/api/model-request-accelerator/timings");
 		const readLedger = async () => (await (await route.fetch(new Request("http://localhost/api/model-request-accelerator/timings?sessionId=s1"))).json()).measurements;
 
 		await drain();
@@ -556,7 +556,7 @@ test("measures the server phase on every request of a pooled connection", async 
 			}
 		}
 
-		const route = harness.routes.find((candidate) => candidate.methods.includes("GET"));
+		const route = harness.routes.find((candidate) => candidate.path === "/api/model-request-accelerator/timings");
 		const payload = await (await route.fetch(new Request("http://localhost/api/model-request-accelerator/timings?sessionId=pooled"))).json();
 		assert.equal(payload.measurements.length, 4);
 		for (const measured of payload.measurements) {
@@ -592,7 +592,7 @@ test("reports the response content-encoding and counts wire bytes", async () => 
 		for await (const _chunk of waterfall({ provider: "alpha", model: "test-model", sessionId: "gzipped" }, () => inner)) {
 			// Drain.
 		}
-		const route = harness.routes.find((candidate) => candidate.methods.includes("GET"));
+		const route = harness.routes.find((candidate) => candidate.path === "/api/model-request-accelerator/timings");
 		const payloadAnswer = await (await route.fetch(new Request("http://localhost/api/model-request-accelerator/timings?sessionId=gzipped"))).json();
 		const [measured] = payloadAnswer.measurements;
 		assert.equal(measured.responseEncoding, "gzip", "the wire encoding is read out of the diagnostic's header list");
@@ -615,7 +615,7 @@ test("leaves the response encoding null when the gateway does not compress", asy
 		for await (const _chunk of waterfall({ provider: "alpha", model: "test-model", sessionId: "plain" }, () => inner)) {
 			// Drain.
 		}
-		const route = harness.routes.find((candidate) => candidate.methods.includes("GET"));
+		const route = harness.routes.find((candidate) => candidate.path === "/api/model-request-accelerator/timings");
 		const answer = await (await route.fetch(new Request("http://localhost/api/model-request-accelerator/timings?sessionId=plain"))).json();
 		assert.equal(answer.measurements[0].responseEncoding, null);
 	} finally {
@@ -706,7 +706,7 @@ async function runStep(harness, base, sessionId, messages, finishKind = "stop", 
 
 /** Read the timing ledger for one session. */
 async function readLedger(harness, sessionId) {
-	const route = harness.routes.find((candidate) => candidate.methods.includes("GET"));
+	const route = harness.routes.find((candidate) => candidate.path === "/api/model-request-accelerator/timings");
 	const answer = await route.fetch(new Request(`http://localhost/api/model-request-accelerator/timings?sessionId=${sessionId}`));
 	return (await answer.json()).measurements;
 }
@@ -908,13 +908,13 @@ async function waitForLedger(harness, sessionId, count, timeoutMs = 1500) {
 
 /** Call the timing route and keep the response, status included. */
 async function callLedger(harness, sessionId) {
-	const route = harness.routes.find((candidate) => candidate.methods.includes("GET"));
+	const route = harness.routes.find((candidate) => candidate.path === "/api/model-request-accelerator/timings");
 	return route.fetch(new Request(`http://localhost/api/model-request-accelerator/timings?sessionId=${sessionId}`));
 }
 
 /** Read the timing route of a harness. */
 async function fetchLedger(harness, sessionId) {
-	const route = harness.routes.find((candidate) => candidate.methods.includes("GET"));
+	const route = harness.routes.find((candidate) => candidate.path === "/api/model-request-accelerator/timings");
 	return (await (await route.fetch(new Request(`http://localhost/api/model-request-accelerator/timings?sessionId=${sessionId}`))).json()).measurements;
 }
 
