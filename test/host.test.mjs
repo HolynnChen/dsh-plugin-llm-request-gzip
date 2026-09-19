@@ -1330,3 +1330,26 @@ test("a session with no stored rows still works, and never overwrites live ones"
 		harness.disposeAll();
 	}
 });
+
+test("keeps pre-transmitted requests compressed after one has been claimed", async () => {
+	// The claim skips compressing the body, and that must not read as "this
+	// conversation is not compressed" — otherwise every member opened afterwards
+	// goes out uncompressed, and within one pool the whole pool does.
+	const { close, requests, base } = await recordingServer();
+	const harness = createHarness({ providers: { alpha: { enabled: true, minBytes: 0, prewarm: true } }, prewarmPoolSize: 2 });
+	const history = [{ role: "user", content: "y".repeat(20000) }];
+	const held = () => requests.filter((entry) => !entry.completed && !entry.aborted);
+	try {
+		apply(harness.ctx);
+		await runStep(harness, base, "s1", history, "tool-calls");
+		await runStep(harness, base, "s1", [...history, { role: "assistant", content: "ok" }], "tool-calls");
+		await runStep(harness, base, "s1", [...history, { role: "assistant", content: "ok" }, { role: "assistant", content: "more" }], "tool-calls");
+
+		assert.ok(await waitFor(() => held().length >= 2), "a pool is held after the claimed steps");
+		const encodings = held().map((entry) => entry.encoding);
+		assert.ok(encodings.length > 0 && encodings.every((encoding) => encoding === "br"), `every held member is still compressed, saw ${encodings.join(",")}`);
+	} finally {
+		harness.disposeAll();
+		close();
+	}
+});
