@@ -65,6 +65,7 @@ function commitRefs(node) {
 	if (ref !== null && ref !== undefined && typeof ref === "object" && "current" in ref) {
 		ref.current = {
 			scrollIntoView: (options) => scrollCalls.push(options),
+			getBoundingClientRect: () => ({ top: 100 }),
 			remove: () => {}
 		};
 	}
@@ -557,7 +558,7 @@ test("takes the shell's column-width handles out of the layout while mounted", a
 	}
 });
 
-test("bounds the table's own scroller, so the header can stick", async () => {
+test("bounds the panel to one screen, so there is no second scrollbar", async () => {
 	globalThis.window = { innerHeight: 900, addEventListener: () => {}, removeEventListener: () => {} };
 	try {
 		const { exports } = loadBundle();
@@ -583,8 +584,11 @@ test("bounds the table's own scroller, so the header can stick", async () => {
 		const wrapper = tree.children.find((child) => child !== null && typeof child === "object" && child.children?.some?.((inner) => inner === table));
 		assert.ok(wrapper !== undefined, "the table sits in its own scrolling wrapper");
 		assert.equal(wrapper.props.style.overflow, "auto");
-		assert.match(String(wrapper.props.style.maxHeight), /100vh/u, "bounded to the viewport, so the header pins to the table");
-		assert.equal(wrapper.props.style.minHeight, 0, "and can still shrink inside a shorter flex parent");
+		assert.equal(wrapper.props.style.minHeight, 0, "the wrapper shrinks inside the bounded panel");
+
+		// 900px of window, minus the panel top at 100px, minus the shell's 152px
+		// composer reserve and the 16px bottom margin.
+		assert.equal(tree.props.style.maxHeight, 632, "the panel is bounded to the space actually left below it");
 	} finally {
 		delete globalThis.window;
 	}
