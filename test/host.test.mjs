@@ -1478,7 +1478,7 @@ test("sends the original field order again if an endpoint rejects the reordered 
 		await runStep(harness, base, "s1", null, "tool-calls", JSON.stringify({ model: "m", messages: [{ role: "user", content: "y".repeat(2000) }], stream: true, tools }));
 
 		assert.ok(await waitFor(() => requests.length >= 2), "the rejected request was sent again");
-		await waitFor(() => requests[1].completed === true, 500);
+		assert.ok(await waitFor(() => requests[1] !== undefined && requests[1].completed === true), "the retry's body arrived whole");
 		const codec = requests[1].encoding === "br" ? brotliDecompressSync : gunzipSync;
 		const wire = codec(Buffer.concat(requests[1].raw)).toString("utf8");
 		assert.ok(wire.indexOf('"messages"') < wire.indexOf('"tools"'), "the retry keeps the adapter's own order");
@@ -1488,6 +1488,34 @@ test("sends the original field order again if an endpoint rejects the reordered 
 		const later = requests.filter((entry) => entry.completed && entry.encoding !== null).at(-1);
 		const laterWire = (later.encoding === "br" ? brotliDecompressSync : gunzipSync)(Buffer.concat(later.raw)).toString("utf8");
 		assert.ok(laterWire.indexOf('"messages"') < laterWire.indexOf('"tools"'), "the refusal is remembered");
+	} finally {
+		harness.disposeAll();
+		close();
+	}
+});
+
+test("shows stored history in front of a session that is already running", async () => {
+	// The panel is opened after the session has run something, so live records
+	// already exist by the time anyone asks. The stored rows still belong in front
+	// of them, and their ids must not collide with the live ones.
+	const { close, base } = await recordingServer();
+	const storage = fakeStorage({
+		s1: { updatedAt: 1, rows: [
+			{ id: 1, provider: "sg", model: "m", totalMs: 11 },
+			{ id: 2, provider: "sg", model: "m", totalMs: 22 }
+		] }
+	});
+	const harness = createHarness({ providers: {} }, { storage });
+	try {
+		apply(harness.ctx);
+		// A live measurement for the same session, before the panel is ever read.
+		await runStep(harness, base, "s1", [{ role: "user", content: "one" }], "stop");
+		const rows = await waitForLedger(harness, "s1", 3);
+		assert.equal(rows.length, 3, "both the stored history and this run's row are served");
+		assert.deepEqual(rows.map((row) => row.totalMs), [11, 22, rows[2].totalMs], "the stored rows come first");
+		const ids = rows.map((row) => row.id);
+		assert.equal(new Set(ids).size, ids.length, `ids stay unique across the merge, saw ${ids.join(",")}`);
+		assert.ok(ids[2] > ids[1], "and continue past the stored ones");
 	} finally {
 		harness.disposeAll();
 		close();
