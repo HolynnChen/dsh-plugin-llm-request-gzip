@@ -691,6 +691,16 @@ test("pre-transmits the shared history across a pool, then sends only the increm
 
 		const measurements = await readLedger(harness, "s1");
 		assert.notEqual(measurements[1].prewarm, null, "the second step records its pre-transmission");
+		// A pre-transmitted request still has to be measured as its own row, and
+		// anchored at the claim rather than after its response came back.
+		const [firstRow, secondRow] = measurements;
+		assert.ok(secondRow.sendMs !== null && secondRow.sendMs >= 0, "the claim starts the send phase");
+		assert.ok(secondRow.serverMs !== null, "the server phase is its own");
+		assert.ok(secondRow.ttftMs !== null, "and so is the TTFT");
+		assert.ok(secondRow.toFirstTokenMs !== null, "the wait to the first token is recorded");
+		assert.ok(secondRow.toFirstTokenMs >= secondRow.ttftMs, "the wait covers at least the TTFT");
+		assert.ok(secondRow.responseBytes > 0, "and it is charged its own response bytes");
+		assert.ok(firstRow.responseBytes > 0 && firstRow.responseBytes <= secondRow.responseBytes * 2 + 200, "the previous row is not charged with them");
 	} finally {
 		harness.disposeAll();
 		close();
