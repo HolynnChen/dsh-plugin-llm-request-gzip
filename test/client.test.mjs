@@ -480,3 +480,25 @@ test("renders the timing columns, the sizes and the compression delta", async ()
 	assert.ok(texts.includes("12.1KB"), "expected the response size");
 	assert.ok(texts.includes("900ms"), "expected the server phase");
 });
+
+test("covers the shell's column-width handles so the panel cannot be dragged wider", async () => {
+	const { exports } = loadBundle();
+	const harness = createClientContext();
+	exports.apply(harness.ctx);
+	const view = harness.registrationFor("conversation.view");
+	const props = { ...view.options.inject(), sessionId: "s1", loadTimings: async () => [] };
+	withoutTimers(() => mount(view.component, props));
+	await flush();
+	const tree = withoutTimers(() => rerender(view.component, props));
+
+	const shields = tree.children.filter((child) => child !== null && typeof child === "object" && child.props["data-handle-shield"] !== undefined);
+	assert.deepEqual(shields.map((shield) => shield.props["data-handle-shield"]), ["left", "right"]);
+	for (const shield of shields) {
+		assert.equal(shield.props["aria-hidden"], "true", "decoration only");
+		assert.equal(shield.props.style.position, "absolute");
+		assert.ok(shield.props.style.zIndex > 8, "above the shell handle, which sits at z-index 8");
+	}
+	assert.ok(shields[0].props.style.right !== undefined && shields[0].props.style.left === undefined, "the left band is anchored from the right edge");
+	assert.ok(shields[1].props.style.left !== undefined && shields[1].props.style.right === undefined, "the right band is anchored from the left edge");
+	assert.match(String(shields[0].props.style.right), /--dsh-chat-content-width/u, "positioned by the same axis the shell handle uses");
+});

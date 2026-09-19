@@ -47,6 +47,8 @@ stream begins ──▶ fetch() ──────▶ body sent ─────�
 
 Hovering a row shows what does not fit: the preparation time (stream start → request issued) and the input/output token counts.
 
+The conversation column's own width handles are shell chrome, rendered for whichever view is active. This view covers exactly their two gutter bands so a stray drag over the table cannot resize the column; both bands lie outside the centred content column, so no data sits under them. That behaviour lives in `SHIELD_WIDTH` / `shieldLeft` / `shieldRight` in `lib/client.js` — remove those three and the panel behaves like every other view again.
+
 ### Why this differs from the Trajectory's TTFT
 
 The Trajectory's own timing panel measures TTFT from the **start of the step** (`firstTokenTime - stepStartTime`), which folds body serialization and request sending into the wait. The Trajectory is a shipped bundle with no extension point for that panel, so this breakdown is delivered as its own view instead — and its "发送" boundary is the part the Trajectory cannot show.

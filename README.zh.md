@@ -48,6 +48,8 @@ DSH 的两个 adapter（`dsh-llm-deepseek`、`dsh-llm-pi-ai`）都直接调用�
 
 把鼠标停在某一行上，可以看到塞不进表格的细节：准备耗时（流开始 → 请求发出）以及输入/输出 token 数。
 
+会话列自身的宽度拖拽手柄属于外壳（shell），只要会话处于 active，它对**每个**视图都会渲染。本视图正好盖住它的两条 gutter 带，因此在表格上误拖不会改变列宽；两条带都在居中内容列之外，不会压住任何数据。该行为位于 `lib/client.js` 的 `SHIELD_WIDTH` / `shieldLeft` / `shieldRight`——删掉这三处，面板就恢复成和其它视图一样。
+
 ### 为什么和「轨迹」里的 TTFT 不一样
 
 轨迹自带的耗时面板是从 **step 开始**算 TTFT 的（`firstTokenTime - stepStartTime`），把请求体序列化和发送都算进了等待里。
