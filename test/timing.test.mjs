@@ -100,13 +100,14 @@ test("reports the provider's prefix-cache accounting", () => {
 	const store = createTimingStore({ now: clock.now, wallNow: clock.wallNow });
 	const record = store.begin({ provider: "sg", sessionId: "s1" });
 	store.noteFetch(record, "https://gateway.example/v1/chat/completions", BODY_BYTES);
-	store.observeChunk(record, { type: "usage", usage: { inputTokens: 1000, outputTokens: 100, cacheReadTokens: 900, cacheWriteTokens: 0 } }, clock.now());
+	// `inputTokens` counts UNCACHED input only, so this prompt is 900 + 100.
+	store.observeChunk(record, { type: "usage", usage: { inputTokens: 100, outputTokens: 100, cacheReadTokens: 900, cacheWriteTokens: 0 } }, clock.now());
 	store.finish(record, clock.now());
 
 	const [measured] = store.snapshot("s1");
 	assert.equal(measured.cacheReadTokens, 900);
 	assert.equal(measured.cacheWriteTokens, 0);
-	assert.equal(measured.cacheHitPercent, 90, "900 of 1000 input tokens came from the prefix cache");
+	assert.equal(measured.cacheHitPercent, 90, "900 of the 1000 prompt tokens came from the prefix cache");
 });
 
 test("leaves the cache hit rate null when the provider reports no cache usage", () => {

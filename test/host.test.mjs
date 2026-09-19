@@ -316,7 +316,7 @@ async function sseServer(plan) {
  * `StreamChunk`s. Only the provider-specific logic is absent, which is the
  * point — the plugin measures the transport, not the adapter.
  */
-async function* readChatStream(base, body) {
+async function* readChatStream(base, body, finishKind = "stop") {
 	const response = await fetch(`${base}/chat/completions`, {
 		method: "POST",
 		headers: { "content-type": "application/json", accept: "text/event-stream" },
@@ -334,7 +334,7 @@ async function* readChatStream(base, body) {
 			if (line === undefined) continue;
 			const payload = line.slice(6);
 			if (payload === "[DONE]") {
-				yield { type: "finish", reason: { kind: "stop" } };
+				yield { type: "finish", reason: { kind: finishKind } };
 				return;
 			}
 			const parsed = JSON.parse(payload);
@@ -621,9 +621,9 @@ async function recordingServer() {
 }
 
 /** Drive one complete model step for `messages`, as the agent loop would. */
-async function runStep(harness, base, sessionId, messages) {
+async function runStep(harness, base, sessionId, messages, finishKind = "stop") {
 	const waterfall = harness.listeners.get("llm/stream")[0];
-	const inner = readChatStream(base, { messages });
+	const inner = readChatStream(base, { messages }, finishKind);
 	const received = [];
 	for await (const chunk of waterfall({ provider: "alpha", model: "test-model", sessionId }, () => inner)) received.push(chunk);
 	return received;
@@ -642,7 +642,7 @@ test("pre-transmits the shared history, then sends only the increment", async ()
 	try {
 		apply(harness.ctx);
 		const history = [{ role: "user", content: "turn one ".repeat(200) }];
-		await runStep(harness, base, "s1", history);
+		await runStep(harness, base, "s1", history, "tool-calls");
 
 		assert.ok(await waitFor(() => requests.length === 2), "the first step opened a second, held request");
 		const held = requests[1];
@@ -656,7 +656,7 @@ test("pre-transmits the shared history, then sends only the increment", async ()
 			...history,
 			{ role: "assistant", content: "ok" },
 			{ role: "user", content: "turn two" }
-		]);
+		], "tool-calls");
 		assert.ok(held.firstChunkAt <= beforeSecondStep, "the history was on the wire before the second step was even issued");
 
 		assert.equal(requests.length, 2, "the second step reused the held request instead of opening another");
@@ -678,10 +678,10 @@ test("abandons a held request whose history no longer matches", async () => {
 	const harness = createHarness({ providers: { alpha: { prewarm: true } } });
 	try {
 		apply(harness.ctx);
-		await runStep(harness, base, "s1", [{ role: "user", content: "turn one" }]);
+		await runStep(harness, base, "s1", [{ role: "user", content: "turn one" }], "tool-calls");
 		assert.ok(await waitFor(() => requests.length === 2 && requests[1].chunks.length > 0), "a request is held");
 
-		await runStep(harness, base, "s1", [{ role: "user", content: "a different history" }]);
+		await runStep(harness, base, "s1", [{ role: "user", content: "a different history" }], "tool-calls");
 
 		assert.equal(requests.length, 3, "the mismatch opened a fresh request");
 		assert.equal(requests[1].aborted, true, "the held request was abandoned");
@@ -703,11 +703,11 @@ test("pre-transmission composes with gzip instead of replacing it", async () => 
 	const second = [...first, { role: "assistant", content: "ok" }];
 	try {
 		apply(harness.ctx);
-		await runStep(harness, base, "s1", first);
+		await runStep(harness, base, "s1", first, "tool-calls");
 		assert.ok(await waitFor(() => requests.length === 2 && requests[1].chunks.length > 0), "a request is held");
 		const beforeSecondStep = Date.now();
 		await new Promise((resolve) => setTimeout(resolve, 30));
-		await runStep(harness, base, "s1", second);
+		await runStep(harness, base, "s1", second, "tool-calls");
 
 		const held = requests[1];
 		assert.equal(held.encoding, "gzip", "the held request is gzip-encoded, keeping the compression");
@@ -724,3 +724,39 @@ test("pre-transmission composes with gzip instead of replacing it", async () => 
 });
 
 //#endregion
+
+test("drops the held request when the step ends the turn", async () => {
+	const { close, requests, base } = await recordingServer();
+	const harness = createHarness({ providers: { alpha: { prewarm: true } } });
+	try {
+		apply(harness.ctx);
+		await runStep(harness, base, "s1", [{ role: "user", content: "hello" }], "stop");
+
+		// The history goes out as soon as the call is issued...
+		assert.ok(await waitFor(() => requests.length === 2), "the call opened a held request");
+		// ...and is abandoned when the step turns out to end the turn, because no
+		// further request will ever consume it.
+		assert.ok(await waitFor(() => requests[1].aborted === true || requests[1].completed === true), "the held request was released");
+		assert.equal(requests.length, 2, "and nothing new was opened");
+	} finally {
+		harness.disposeAll();
+		close();
+	}
+});
+
+test("bounds how many conversations hold a request at once", async () => {
+	const { close, requests, base } = await recordingServer();
+	const harness = createHarness({ providers: { alpha: { prewarm: true } }, prewarmPoolSize: 2 });
+	try {
+		apply(harness.ctx);
+		for (const session of ["s1", "s2", "s3"]) await runStep(harness, base, session, [{ role: "user", content: session }], "tool-calls");
+		// A live held request is one that is still open: not completed, not aborted.
+		const live = () => requests.filter((entry) => !entry.completed && !entry.aborted);
+		assert.ok(await waitFor(() => live().length === 2), "the pool bound settles at two");
+		assert.equal(requests[1].aborted, true, "the oldest held request was evicted first");
+		assert.equal(live().length, 2, "and exactly two remain held");
+	} finally {
+		harness.disposeAll();
+		close();
+	}
+});

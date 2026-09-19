@@ -41,7 +41,7 @@ stream begins ──▶ fetch() ──────▶ body sent ─────�
 | 首 token / TTFT | Body sent → **first token**. |
 | 生成 / generation | First token → stream end. |
 | tok/s | Output tokens ÷ the generation window. |
-| 缓存 / cache | Share of the prompt the provider served from its prefix cache (cached input tokens ÷ input tokens), with the raw counts on hover. |
+| 缓存 / cache | Share of the prompt the provider served from its prefix cache. `inputTokens` counts *uncached* input only, so the prompt is cached + uncached and the rate is cached ÷ (cached + uncached); the raw counts are on hover. |
 | 请求体 / request body | `before → after` when the body was gzipped, otherwise the single serialized size. |
 | 响应体 / response body | Bytes actually received **on the wire**, plus the response's `content-encoding` when it declares one — so a gzip-encoded reply is labelled rather than merely looking small. |
 | 总计 / total | Fetch call → stream end. |
@@ -147,12 +147,20 @@ llm-request-gzip:
     sg:
       enabled: true
       minBytes: 1024
+      prewarm: true
+  prewarmHoldMs: 120000
+  prewarmPoolSize: 3
   timing: true
 ```
 
 ### Pre-transmission (opt-in, per provider)
 
-A multi-turn request re-sends its entire history every step. With **预传输 / pre-transmission** enabled for a provider, the plugin puts the *shared* history of the next request on the wire the moment a step finishes — while the tools that step asked for are still running — so that when the next request is actually issued, only the increment (the assistant turn and the tool results) still has to be written.
+A multi-turn request re-sends its entire history every step. With **预传输 / pre-transmission** enabled for a provider, the plugin opens the *next* request the moment a model call is issued and writes that call's own message history into it, so the upload overlaps the model call itself and the tools that follow it. When the next request is actually issued, only the increment — the assistant turn and the tool results — still has to be written.
+
+- **Start** — as soon as a model call goes out. The history it carries is exactly the history the next request will repeat, so it is known then, with no guessing about what the adapter will serialize later.
+- **Keep** — through that call and the tools it asks for.
+- **Drop** — the moment a step ends the turn (`stop`, `max-tokens`, an error, an interruption) rather than `tool-calls`, because no further request will consume it; also on the hold timeout, when a newer call for the same conversation replaces it, and when the pool bound below is exceeded.
+- **Bound** — `prewarmPoolSize` (default `3`) is how many conversations may hold one at once. There is only ever one possible successor per conversation, so this bounds concurrent held requests; it is not a set of alternatives to choose from.
 
 It is off by default, and it is worth being clear about why it is a measured experiment rather than a free win:
 
