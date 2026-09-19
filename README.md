@@ -176,6 +176,8 @@ The one thing shared across agents is the decision to stop pre-transmitting to a
 
 A held member carries a chunked body, because its length cannot be known before the increment is. If an endpoint answers badly — or refuses a chunked body — pre-transmission switches off for that endpoint, and a shape rejection (411/415/501) is resent as an ordinary request.
 
+The ledger is **durable per session**: rows are stored one document per session in the deployment's storage backend (`~/.dsh/storages`, via the storage domain layer), so reopening a session — or restarting the harness — shows its history rather than an empty panel. A profile without a storage backend keeps the ledger in memory, exactly as before.
+
 Rows that used it carry a **预热** chip; hover it for the pre-sent bytes, the increment, and how long the member was held. That last number is the lead time actually won, and it is the honest way to tell whether a longer pool is worth anything on a given link.
 
 gzip and pre-transmission compose: the split keeps **one** deflate stream open across every part, so the parts decompress as a single body and the compression is kept rather than traded away.

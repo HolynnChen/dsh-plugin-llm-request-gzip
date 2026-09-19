@@ -57,7 +57,9 @@
     "test": "node --test test/host.test.mjs test/client.test.mjs test/timing.test.mjs test/prewarm.test.mjs"
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "^3.18.2"
+    "@deepseek-ai/schemastery": "^3.18.2",
+    "zod": "^4.0.0",
+    "@deepseek-ai/dsh-storage-domain": "^0.1.5-rc.2"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.2"

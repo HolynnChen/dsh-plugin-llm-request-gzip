@@ -117,7 +117,12 @@ function createHarness(initialSection = {}, options = {}) {
 			return () => {};
 		},
 		inject(names, callback) {
-			callback({ settings, connection });
+			// Mirrors Cordis: the callback receives a context whose `get` resolves
+			// exactly what was injected. `storage` is present only when a test asks
+			// for one, which is also how a storage-less deployment behaves.
+			const injected = { settings, connection };
+			if (options.storage !== undefined) injected.storage = options.storage;
+			callback({ get: (name) => injected[name], ...injected });
 			return () => {};
 		}
 	};
@@ -891,6 +896,47 @@ test("adds the assistant turn to the pool while the tools run", async () => {
 
 
 
+/** A storage backend stand-in: one durable record per session, like the real one. */
+function fakeStorage(seed = {}) {
+	const table = new Map(Object.entries(seed));
+	return {
+		table,
+		domain: {
+			async open() {
+				return {
+					sessions: {
+						get: (key) => table.get(key),
+						put: async (key, value) => {
+							table.set(key, value);
+						},
+						delete: async (key) => table.delete(key),
+						get size() {
+							return table.size;
+						}
+					},
+					close: async () => {}
+				};
+			}
+		}
+	};
+}
+
+/** Poll the timing route until it reports `count` rows, or the deadline passes. */
+async function waitForLedger(harness, sessionId, count, timeoutMs = 1500) {
+	const deadline = Date.now() + timeoutMs;
+	for (;;) {
+		const rows = await fetchLedger(harness, sessionId);
+		if (rows.length === count || Date.now() > deadline) return rows;
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+}
+
+/** Read the timing route of a harness. */
+async function fetchLedger(harness, sessionId) {
+	const route = harness.routes.find((candidate) => candidate.methods.includes("GET"));
+	return (await (await route.fetch(new Request(`http://localhost/api/model-request-accelerator/timings?sessionId=${sessionId}`))).json()).measurements;
+}
+
 test("rebuilds the pool from the new prefix after a mismatch", async () => {
 	const { close, requests, base } = await recordingServer();
 	const harness = createHarness({ providers: { alpha: { prewarm: true } }, prewarmPoolSize: 2 });
@@ -1237,5 +1283,50 @@ test("pre-sends only what every framing agrees on, so nothing is a guess", async
 	} finally {
 		harness.disposeAll();
 		close();
+	}
+});
+
+
+test("writes each session's ledger and loads it back", async () => {
+	const { close, base } = await recordingServer();
+	const storage = fakeStorage();
+	const harness = createHarness({ providers: {} }, { storage });
+	try {
+		apply(harness.ctx);
+		await runStep(harness, base, "s1", [{ role: "user", content: "one" }], "stop");
+		assert.ok(await waitFor(() => storage.table.has("s1")), "the session's rows were written");
+		const stored = storage.table.get("s1");
+		assert.equal(stored.rows.length, 1, "one row");
+		assert.equal(stored.rows[0].provider, "alpha", "with the measurement in it");
+		assert.equal(typeof stored.updatedAt, "number");
+
+		// A fresh process over the same storage: the panel must show the history
+		// rather than an empty table.
+		const restarted = createHarness({ providers: {} }, { storage });
+		try {
+			apply(restarted.ctx);
+			const rows = await waitForLedger(restarted, "s1", 1);
+			assert.equal(rows.length, 1, "the stored row is served again");
+			assert.equal(rows[0].provider, "alpha");
+			assert.equal(rows[0].totalMs !== undefined, true);
+		} finally {
+			restarted.disposeAll();
+		}
+	} finally {
+		harness.disposeAll();
+		close();
+	}
+});
+
+test("a session with no stored rows still works, and never overwrites live ones", async () => {
+	const storage = fakeStorage({ s1: { updatedAt: 1, rows: [{ id: 1, provider: "old", model: null, totalMs: 5 }] } });
+	const harness = createHarness({ providers: {} }, { storage });
+	try {
+		apply(harness.ctx);
+		const rows = await waitForLedger(harness, "s1", 1);
+		assert.equal(rows.length, 1, "the stored row shows up");
+		assert.equal(rows[0].provider, "old", "and it is the stored one");
+	} finally {
+		harness.disposeAll();
 	}
 });
