@@ -768,7 +768,7 @@ test("holds the headings and every provider in one grid", async () => {
 	const grids = collect(body, (node) => typeof node.props?.style?.gridTemplateColumns === "string" && node.props.style.gridTemplateColumns.startsWith("34px"));
 	assert.equal(grids.length, 1, "headings and rows share one grid");
 	const [grid] = grids;
-	assert.deepEqual(grid.children.slice(0, 4).map((cell) => cell.children[0]), ["gzip", "提供方", "预传输", "最小体积"], "four headings, first in the grid");
+	assert.deepEqual(grid.children.slice(0, 4).map((cell) => cell.children[0]), ["压缩", "提供方", "预传输", "最小体积"], "four headings, first in the grid");
 
 	// Each route contributes the same four cells, after a group label that spans
 	// the grid (so it cannot disturb a column).
