@@ -1,5 +1,5 @@
 {
-  "name": "dsh-plugin-llm-request-gzip",
+  "name": "dsh-plugin-model-request-accelerator",
   "version": "0.1.0",
   "description": "Gzip request-body compression and request timing breakdown for DeepSeek Harness model calls",
   "type": "module",
@@ -44,12 +44,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/HolynnChen/dsh-plugin-llm-request-gzip.git"
+    "url": "git+https://github.com/HolynnChen/dsh-plugin-model-request-accelerator.git"
   },
   "bugs": {
-    "url": "https://github.com/HolynnChen/dsh-plugin-llm-request-gzip/issues"
+    "url": "https://github.com/HolynnChen/dsh-plugin-model-request-accelerator/issues"
   },
-  "homepage": "https://github.com/HolynnChen/dsh-plugin-llm-request-gzip#readme",
+  "homepage": "https://github.com/HolynnChen/dsh-plugin-model-request-accelerator#readme",
   "engines": {
     "node": ">=20"
   },

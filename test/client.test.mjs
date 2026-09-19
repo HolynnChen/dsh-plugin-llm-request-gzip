@@ -20,7 +20,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const PACKAGE_NAME = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).name;
-const NS = "llm-request-gzip";
+const NS = "model-request-accelerator";
 const SITE = "https://gateway.example/v1";
 
 //#region minimal React
@@ -278,7 +278,7 @@ test("the settings card starts collapsed and expands on click", async () => {
 	assert.equal(header.props["aria-expanded"], false, "collapsed by default");
 	assert.match(header.props["aria-label"], /展开/u);
 	assert.equal(body, null, "the body is not rendered while collapsed");
-	assert.equal(header.children[0].children[0].children[0], "模型请求 gzip 与耗时");
+	assert.equal(header.children[0].children[0].children[0], "模型请求加速");
 
 	header.props.onClick();
 	const expanded = rerender(card.component, { ctl });
@@ -457,7 +457,7 @@ test("reads the timing ledger over the same-origin API route", async () => {
 	};
 	try {
 		assert.deepEqual(await loadTimings("session-1"), [{ id: 1, sendMs: 12 }]);
-		assert.equal(calls[0].url, "/api/llm-request-gzip/timings?sessionId=session-1", "same-origin, so the browser session cookie rides along");
+		assert.equal(calls[0].url, "/api/model-request-accelerator/timings?sessionId=session-1", "same-origin, so the browser session cookie rides along");
 	} finally {
 		globalThis.fetch = realFetch;
 	}

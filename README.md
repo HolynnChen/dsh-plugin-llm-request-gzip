@@ -1,4 +1,6 @@
-# dsh-plugin-llm-request-gzip
+# dsh-plugin-model-request-accelerator
+
+**模型请求加速 / model request accelerator** — compress model request bodies, pre-transmit the shared history, and break down where each request spends its time.
 
 Two things for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) model calls:
 
@@ -80,10 +82,10 @@ Measurements are held in memory on the Host (last 100 per session, last 40 sessi
 ### One command
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/HolynnChen/dsh-plugin-llm-request-gzip/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/HolynnChen/dsh-plugin-model-request-accelerator/main/install.sh | sh
 ```
 
-It clones the plugin into `$DSH_HOME/profiles/web/plugins/llm-request-gzip` and appends its loader entry to
+It clones the plugin into `$DSH_HOME/profiles/web/plugins/model-request-accelerator` and appends its loader entry to
 `cordis.patch.yml`, leaving an already-registered entry alone — safe to re-run. Target another profile with
 `DSH_HOME=... DSH_PROFILE=... sh`.
 
@@ -96,8 +98,8 @@ Then **reload the browser tab** and open **Settings → Plugins → Configuratio
 #### 1. Put the package inside your profile
 
 ```bash
-git clone https://github.com/HolynnChen/dsh-plugin-llm-request-gzip.git \
-  "${DSH_HOME:-$HOME/.dsh}/profiles/web/plugins/llm-request-gzip"
+git clone https://github.com/HolynnChen/dsh-plugin-model-request-accelerator.git \
+  "${DSH_HOME:-$HOME/.dsh}/profiles/web/plugins/model-request-accelerator"
 ```
 
 No install step is needed for dependency resolution: Node walks up from the plugin directory into the profile's own hoisted `node_modules`, where `@deepseek-ai/schemastery` already lives. If that does not hold for your layout, run `npm install --omit=dev` inside the cloned directory.
@@ -108,13 +110,13 @@ No install step is needed for dependency resolution: Node walks up from the plug
 
 ```yaml
 - insert:
-    - id: llm-request-gzip
-      name: './plugins/llm-request-gzip/lib/index.js'
+    - id: model-request-accelerator
+      name: './plugins/model-request-accelerator/lib/index.js'
 ```
 
 The `name` resolves relative to the profile directory, so a relative path keeps working across machines. An absolute path works too.
 
-> Prefer pnpm-managed installs? `dsh plugin --profile web add github:HolynnChen/dsh-plugin-llm-request-gzip` (requires `pnpm` on `PATH`) installs it into the profile, after which the same entry can use `name: 'dsh-plugin-llm-request-gzip'`.
+> Prefer pnpm-managed installs? `dsh plugin --profile web add github:HolynnChen/dsh-plugin-model-request-accelerator` (requires `pnpm` on `PATH`) installs it into the profile, after which the same entry can use `name: 'dsh-plugin-model-request-accelerator'`.
 
 #### 3. Reload the page
 
@@ -140,10 +142,10 @@ The card lives in **Settings → Plugins → Configuration**, collapsed like eve
 
 Each route's endpoint is shown next to it. Routes that share one endpoint are grouped, because that endpoint's traffic is compressed as soon as any one of them is enabled.
 
-Settings persist under the `llm-request-gzip` key of `settings.yaml`:
+Settings persist under the `model-request-accelerator` key of `settings.yaml`:
 
 ```yaml
-llm-request-gzip:
+model-request-accelerator:
   providers:
     sg:
       enabled: true
@@ -189,7 +191,7 @@ gzip and pre-transmission compose: the split keeps **one** deflate stream open a
 The Host logs one line per compressed request:
 
 ```
-llm-request-gzip: sg request compressed 3043 -> 79 bytes
+model-request-accelerator: sg request compressed 3043 -> 79 bytes
 ```
 
 `endpoint-matched` appears instead of a provider name when a request could not be attributed to a provider (see below).
@@ -206,7 +208,7 @@ Dynamic plugins run in a `node:vm` sandbox where `fetch` and `require` are trapp
 
 ## Uninstall
 
-Delete the `llm-request-gzip` entry from `cordis.patch.yml` (and the cloned directory). The change is live; reload the page and the card is gone.
+Delete the `model-request-accelerator` entry from `cordis.patch.yml` (and the cloned directory). The change is live; reload the page and the card is gone.
 
 ## Tests
 

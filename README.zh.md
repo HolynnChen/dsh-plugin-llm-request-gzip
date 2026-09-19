@@ -1,4 +1,6 @@
-# dsh-plugin-llm-request-gzip
+# dsh-plugin-model-request-accelerator
+
+**模型请求加速 / model request accelerator** — compress model request bodies, pre-transmit the shared history, and break down where each request spends its time.
 
 为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的模型请求提供两件事：
 
@@ -86,10 +88,10 @@ DSH 的两个 adapter（`dsh-llm-deepseek`、`dsh-llm-pi-ai`）都直接调用�
 ### 一行命令
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/HolynnChen/dsh-plugin-llm-request-gzip/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/HolynnChen/dsh-plugin-model-request-accelerator/main/install.sh | sh
 ```
 
-脚本会把插件克隆到 `$DSH_HOME/profiles/web/plugins/llm-request-gzip`，并把装载条目追加到 `cordis.patch.yml`；
+脚本会把插件克隆到 `$DSH_HOME/profiles/web/plugins/model-request-accelerator`，并把装载条目追加到 `cordis.patch.yml`；
 若该条目已存在则保持原样，可重复执行。指定其它 profile：`DSH_HOME=... DSH_PROFILE=... sh`。
 
 之后**刷新浏览器页面**，打开 **设置 → 插件 → 配置**。
@@ -101,8 +103,8 @@ curl -fsSL https://raw.githubusercontent.com/HolynnChen/dsh-plugin-llm-request-g
 #### 1. 把包放进 profile
 
 ```bash
-git clone https://github.com/HolynnChen/dsh-plugin-llm-request-gzip.git \
-  "${DSH_HOME:-$HOME/.dsh}/profiles/web/plugins/llm-request-gzip"
+git clone https://github.com/HolynnChen/dsh-plugin-model-request-accelerator.git \
+  "${DSH_HOME:-$HOME/.dsh}/profiles/web/plugins/model-request-accelerator"
 ```
 
 依赖解析无需额外安装步骤：Node 会从插件目录逐级向上查找，命中 profile 自己已 hoist 的 `node_modules`，
@@ -114,14 +116,14 @@ git clone https://github.com/HolynnChen/dsh-plugin-llm-request-gzip.git \
 
 ```yaml
 - insert:
-    - id: llm-request-gzip
-      name: './plugins/llm-request-gzip/lib/index.js'
+    - id: model-request-accelerator
+      name: './plugins/model-request-accelerator/lib/index.js'
 ```
 
 `name` 相对 profile 目录解析，因此相对路径换机器也能用；写绝对路径同样可以。
 
-> 更喜欢用 pnpm 管理？`dsh plugin --profile web add github:HolynnChen/dsh-plugin-llm-request-gzip`
-> （需要 `pnpm` 在 `PATH` 上）会把它装进 profile，之后同一行可以写成 `name: 'dsh-plugin-llm-request-gzip'`。
+> 更喜欢用 pnpm 管理？`dsh plugin --profile web add github:HolynnChen/dsh-plugin-model-request-accelerator`
+> （需要 `pnpm` 在 `PATH` 上）会把它装进 profile，之后同一行可以写成 `name: 'dsh-plugin-model-request-accelerator'`。
 
 #### 3. 刷新页面
 
@@ -150,10 +152,10 @@ git clone https://github.com/HolynnChen/dsh-plugin-llm-request-gzip.git \
 每行会显示该路由的 endpoint。共用同一 endpoint 的路由会被归为一组，因为只要其中任意一个被启用，
 该 endpoint 的流量就会被压缩。
 
-设置持久化在 `settings.yaml` 的 `llm-request-gzip` 段：
+设置持久化在 `settings.yaml` 的 `model-request-accelerator` 段：
 
 ```yaml
-llm-request-gzip:
+model-request-accelerator:
   providers:
     sg:
       enabled: true
@@ -200,7 +202,7 @@ gzip 与预传输可以并存：切分时保持**同一个 deflate 流**不关�
 Host 会为每次压缩输出一行日志：
 
 ```
-llm-request-gzip: sg request compressed 3043 -> 79 bytes
+model-request-accelerator: sg request compressed 3043 -> 79 bytes
 ```
 
 当请求无法归属到具体提供方时（见下），日志里显示的是 `endpoint-matched` 而不是提供方名。
@@ -223,7 +225,7 @@ llm-request-gzip: sg request compressed 3043 -> 79 bytes
 
 ## 卸载
 
-删除 `cordis.patch.yml` 中的 `llm-request-gzip` 条目（以及克隆的目录）。改动实时生效，刷新页面后卡片消失。
+删除 `cordis.patch.yml` 中的 `model-request-accelerator` 条目（以及克隆的目录）。改动实时生效，刷新页面后卡片消失。
 
 ## 测试
 

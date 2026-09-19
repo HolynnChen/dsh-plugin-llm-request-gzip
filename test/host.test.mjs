@@ -20,6 +20,9 @@ import { randomBytes } from "node:crypto";
 import test from "node:test";
 import { apply, Config, NS } from "../lib/index.js";
 
+/** The namespace this plugin used before it was renamed. */
+const LEGACY_NS = "llm-request-gzip";
+
 /** Two routes, one endpoint: `alpha` is a whole-section profile, `beta` a nested one. */
 const SHARED_ENDPOINT = "https://gateway.example/v1";
 const OTHER_ENDPOINT = "https://other.example/v1";
@@ -58,6 +61,9 @@ function createHarness(initialSection = {}, options = {}) {
 		}
 	};
 
+	const registered = [];
+	const updates = [];
+	const descriptors = {};
 	const settings = {
 		installSection(owner, ns, schema, base, hooks) {
 			assert.equal(ns, NS);
@@ -65,6 +71,18 @@ function createHarness(initialSection = {}, options = {}) {
 			// Mirrors SettingsProvider.installSection: source, then the first change.
 			hooks.setSource(() => schema({ ...base, ...section }));
 			hooks.onChange();
+		},
+		register(ns) {
+			registered.push(ns);
+		},
+		describe() {
+			return [
+				{ ns: NS, user: descriptors[NS] },
+				{ ns: LEGACY_NS, user: descriptors[LEGACY_NS] }
+			];
+		},
+		async update(ns, patch) {
+			updates.push({ ns, patch });
 		},
 		get(ns) {
 			if (ns === NS) return install.schema({ ...install.base, ...section });
@@ -110,7 +128,7 @@ function createHarness(initialSection = {}, options = {}) {
 		install.hooks.onChange();
 	};
 
-	return { ctx, listeners, routes, setSection, disposeAll: () => { for (const dispose of effects) dispose(); } };
+	return { ctx, listeners, routes, setSection, disposeAll: () => { for (const dispose of effects) dispose(); }, registered, updates, descriptors, LEGACY_NS };
 }
 
 /** Install a spy transport, returning the recorded calls and a restore hook. */
@@ -394,8 +412,8 @@ test("measures a real request end to end from transport diagnostics", async () =
 
 		const route = harness.routes.find((candidate) => candidate.methods.includes("GET"));
 		assert.ok(route !== undefined, "the timing route is registered");
-		assert.equal(route.path, "/api/llm-request-gzip/timings");
-		const answer = await route.fetch(new Request("http://localhost/api/llm-request-gzip/timings?sessionId=session-1"));
+		assert.equal(route.path, "/api/model-request-accelerator/timings");
+		const answer = await route.fetch(new Request("http://localhost/api/model-request-accelerator/timings?sessionId=session-1"));
 		const payload = await answer.json();
 
 		assert.equal(payload.measurements.length, 1);
@@ -419,7 +437,7 @@ test("measures a real request end to end from transport diagnostics", async () =
 		assert.ok(measured.responseBytes > 0, "response bytes are counted from undici's chunks");
 
 		// A different session must not see this one's requests.
-		const other = await (await route.fetch(new Request("http://localhost/api/llm-request-gzip/timings?sessionId=session-2"))).json();
+		const other = await (await route.fetch(new Request("http://localhost/api/model-request-accelerator/timings?sessionId=session-2"))).json();
 		assert.deepEqual(other.measurements, []);
 	} finally {
 		server.close();
@@ -439,7 +457,7 @@ test("records the compression actually applied to a measured request", async () 
 			// Drain.
 		}
 		const route = harness.routes.find((candidate) => candidate.methods.includes("GET"));
-		const payload = await (await route.fetch(new Request("http://localhost/api/llm-request-gzip/timings?sessionId=s1"))).json();
+		const payload = await (await route.fetch(new Request("http://localhost/api/model-request-accelerator/timings?sessionId=s1"))).json();
 		const [measured] = payload.measurements;
 		assert.equal(measured.compressed, true, "the rewrite is reported as compression");
 		assert.ok(measured.sentBytes < measured.requestBytes, "the sent size is smaller than the serialized size");
@@ -465,7 +483,7 @@ test("records nothing while the timing preference is off, but still applies gzip
 		}
 
 		const route = harness.routes.find((candidate) => candidate.methods.includes("GET"));
-		const payload = await (await route.fetch(new Request("http://localhost/api/llm-request-gzip/timings?sessionId=s1"))).json();
+		const payload = await (await route.fetch(new Request("http://localhost/api/model-request-accelerator/timings?sessionId=s1"))).json();
 		assert.deepEqual(payload.measurements, [], "a switched-off ledger stores nothing");
 	} finally {
 		server.close();
@@ -487,7 +505,7 @@ test("turning the timing preference on and off takes effect on the next request"
 			}
 		};
 		const route = harness.routes.find((candidate) => candidate.methods.includes("GET"));
-		const readLedger = async () => (await (await route.fetch(new Request("http://localhost/api/llm-request-gzip/timings?sessionId=s1"))).json()).measurements;
+		const readLedger = async () => (await (await route.fetch(new Request("http://localhost/api/model-request-accelerator/timings?sessionId=s1"))).json()).measurements;
 
 		await drain();
 		assert.equal((await readLedger()).length, 0);
@@ -524,7 +542,7 @@ test("measures the server phase on every request of a pooled connection", async 
 		}
 
 		const route = harness.routes.find((candidate) => candidate.methods.includes("GET"));
-		const payload = await (await route.fetch(new Request("http://localhost/api/llm-request-gzip/timings?sessionId=pooled"))).json();
+		const payload = await (await route.fetch(new Request("http://localhost/api/model-request-accelerator/timings?sessionId=pooled"))).json();
 		assert.equal(payload.measurements.length, 4);
 		for (const measured of payload.measurements) {
 			assert.ok(measured.serverMs !== null, `request ${measured.id} lost its server phase`);
@@ -560,7 +578,7 @@ test("reports the response content-encoding and counts wire bytes", async () => 
 			// Drain.
 		}
 		const route = harness.routes.find((candidate) => candidate.methods.includes("GET"));
-		const payloadAnswer = await (await route.fetch(new Request("http://localhost/api/llm-request-gzip/timings?sessionId=gzipped"))).json();
+		const payloadAnswer = await (await route.fetch(new Request("http://localhost/api/model-request-accelerator/timings?sessionId=gzipped"))).json();
 		const [measured] = payloadAnswer.measurements;
 		assert.equal(measured.responseEncoding, "gzip", "the wire encoding is read out of the diagnostic's header list");
 		assert.equal(measured.responseBytes, compressed.byteLength, "wire bytes, not the decoded body");
@@ -583,7 +601,7 @@ test("leaves the response encoding null when the gateway does not compress", asy
 			// Drain.
 		}
 		const route = harness.routes.find((candidate) => candidate.methods.includes("GET"));
-		const answer = await (await route.fetch(new Request("http://localhost/api/llm-request-gzip/timings?sessionId=plain"))).json();
+		const answer = await (await route.fetch(new Request("http://localhost/api/model-request-accelerator/timings?sessionId=plain"))).json();
 		assert.equal(answer.measurements[0].responseEncoding, null);
 	} finally {
 		server.close();
@@ -674,7 +692,7 @@ async function runStep(harness, base, sessionId, messages, finishKind = "stop") 
 /** Read the timing ledger for one session. */
 async function readLedger(harness, sessionId) {
 	const route = harness.routes.find((candidate) => candidate.methods.includes("GET"));
-	const answer = await route.fetch(new Request(`http://localhost/api/llm-request-gzip/timings?sessionId=${sessionId}`));
+	const answer = await route.fetch(new Request(`http://localhost/api/model-request-accelerator/timings?sessionId=${sessionId}`));
 	return (await answer.json()).measurements;
 }
 
@@ -1119,4 +1137,30 @@ test("records a claimed pre-transmission that died in the handover", async () =>
 		harness.disposeAll();
 		close();
 	}
+});
+
+test("carries settings across from the plugin's former name", () => {
+	const harness = createHarness({ providers: {} });
+	// What the user actually configured under the old name.
+	const stored = { providers: { beta: { enabled: true, prewarm: true } }, prewarmPoolSize: 5 };
+	harness.descriptors[harness.LEGACY_NS] = stored;
+	apply(harness.ctx);
+
+	assert.ok(harness.registered.includes(harness.LEGACY_NS), "the former namespace is registered, so its section stays readable");
+	assert.deepEqual(harness.updates, [{ ns: NS, patch: stored }], "and the user's section is carried to the new one");
+});
+
+test("leaves a namespace alone once the user has configured the new name", () => {
+	const harness = createHarness({ providers: {} });
+	harness.descriptors[harness.LEGACY_NS] = { providers: { beta: { enabled: true } } };
+	harness.descriptors[NS] = { timing: false };
+	apply(harness.ctx);
+
+	assert.deepEqual(harness.updates, [], "the migration stands down rather than overwriting a newer section");
+});
+
+test("does nothing when there was never anything under the former name", () => {
+	const harness = createHarness({ providers: {} });
+	apply(harness.ctx);
+	assert.deepEqual(harness.updates, [], "an empty section carries nothing");
 });
