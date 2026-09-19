@@ -49,7 +49,7 @@ Every column header explains itself on hover, and hovering a row shows what does
 
 The table fills the panel by fixed column shares — the provider/model text takes the largest one and the numeric columns take what their values need — so it neither leaves the panel half empty nor stretches whichever value happens to be longest.
 
-The conversation column's own width handles are shell chrome, rendered for whichever view is active. This view covers exactly their two gutter bands — down past the panel and beside the composer, because the handles span the whole conversation body — so a stray drag cannot resize the column. Both bands lie outside the centred content column, so no data sits under them. That behaviour lives in `SHIELD_WIDTH` / `shieldLeft` / `shieldRight` in `lib/client.js` — remove those three and the panel behaves like every other view again.
+The conversation column's own width handles are shell chrome, rendered for whichever view is active, so a view cannot un-render them — but they carry a stable `data-width-handle` attribute. While this view is mounted it installs one stylesheet rule, `[data-width-handle]{display:none}`, and removes it again on unmount: the transcript cannot be resized by a stray drag over the table, and every other view keeps the handle. The panel also asks the shell's scroller to reveal its top on open, because arriving from a live transcript would otherwise drop it at the bottom. Both behaviours live in the two mount effects at the top of `TimingView` in `lib/client.js`; remove them and the panel behaves like every other view again.
 
 ### Why this differs from the Trajectory's TTFT
 

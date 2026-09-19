@@ -28,6 +28,12 @@ const SITE = "https://gateway.example/v1";
 /** One hook store shared by every render in a scenario; `mount` starts a new one. */
 const hooks = [];
 let hookCursor = 0;
+/** Effects collected during a render, run after the commit the way React runs them. */
+let pendingEffects = [];
+/** Cleanups returned by the effects of the current mount. */
+let effectCleanups = [];
+/** Every `scrollIntoView` the component asked for, with its options. */
+const scrollCalls = [];
 
 const ReactStub = {
 	// Render children the way React does: an array passed as one child is a list
@@ -40,28 +46,60 @@ const ReactStub = {
 			hooks[index] = typeof next === "function" ? next(hooks[index]) : next;
 		}];
 	},
-	// Run effects immediately: these components read on mount, and the test
-	// flushes the microtask queue before re-rendering. TimingView is never
-	// mounted here, so no real interval is ever created.
 	useEffect(fn) {
-		fn();
+		pendingEffects.push(fn);
 	},
 	useCallback: (fn) => fn,
 	useMemo: (fn) => fn(),
 	useRef: (initial) => ({ current: initial })
 };
 
-/** Render one component with fresh hooks and return its element tree. */
+/** Attach refs the way React does at commit time, so terminal nodes exist before effects run. */
+function commitRefs(node) {
+	if (node === null || typeof node !== "object") return;
+	if (Array.isArray(node)) {
+		for (const child of node) commitRefs(child);
+		return;
+	}
+	const ref = node.props?.ref;
+	if (ref !== null && ref !== undefined && typeof ref === "object" && "current" in ref) {
+		ref.current = {
+			scrollIntoView: (options) => scrollCalls.push(options),
+			remove: () => {}
+		};
+	}
+	commitRefs(node.children);
+}
+
+/** Render one component with fresh hooks, commit it, then run its effects. */
 function mount(component, props) {
 	hooks.length = 0;
 	hookCursor = 0;
+	pendingEffects = [];
+	effectCleanups = [];
+	const tree = component(props);
+	commitRefs(tree);
+	for (const effect of pendingEffects) {
+		const cleanup = effect();
+		if (typeof cleanup === "function") effectCleanups.push(cleanup);
+	}
+	return tree;
+}
+
+/**
+ * Re-render the same component without clearing hooks. Effects are not re-run:
+ * every effect under test declares empty dependencies, so React would not re-run
+ * them either.
+ */
+function rerender(component, props) {
+	hookCursor = 0;
+	pendingEffects = [];
 	return component(props);
 }
 
-/** Re-render the same component without clearing hooks, as a state update would. */
-function rerender(component, props) {
-	hookCursor = 0;
-	return component(props);
+/** Unmount the current render, running the effects' cleanups. */
+function unmount() {
+	for (const cleanup of effectCleanups.splice(0)) cleanup();
 }
 
 //#endregion
@@ -486,27 +524,53 @@ test("renders the timing columns, the sizes and the compression delta", async ()
 	assert.ok(texts.includes("900ms"), "expected the server phase");
 });
 
-test("covers the shell's column-width handles so the panel cannot be dragged wider", async () => {
+test("takes the shell's column-width handles out of the layout while mounted", async () => {
+	const appended = [];
+	globalThis.document = {
+		createElement: (tagName) => ({
+			tagName,
+			textContent: "",
+			remove() {
+				const index = appended.indexOf(this);
+				if (index !== -1) appended.splice(index, 1);
+			}
+		}),
+		head: { appendChild: (element) => appended.push(element) }
+	};
+	try {
+		const { exports } = loadBundle();
+		const harness = createClientContext();
+		exports.apply(harness.ctx);
+		const view = harness.registrationFor("conversation.view");
+		const props = { ...view.options.inject(), sessionId: "s1", loadTimings: async () => [] };
+		withoutTimers(() => mount(view.component, props));
+
+		assert.equal(appended.length, 1, "one stylesheet is installed on mount");
+		assert.equal(appended[0].tagName, "style");
+		assert.match(appended[0].textContent, /\[data-width-handle\]\{display:none/u, "the handle is hidden, not covered");
+		assert.match(appended[0].textContent, /!important/u);
+
+		withoutTimers(() => unmount());
+		assert.equal(appended.length, 0, "the stylesheet is removed with the view, restoring the handle");
+	} finally {
+		delete globalThis.document;
+	}
+});
+
+test("starts at the top when the view is opened", () => {
 	const { exports } = loadBundle();
 	const harness = createClientContext();
 	exports.apply(harness.ctx);
 	const view = harness.registrationFor("conversation.view");
 	const props = { ...view.options.inject(), sessionId: "s1", loadTimings: async () => [] };
+	scrollCalls.length = 0;
 	withoutTimers(() => mount(view.component, props));
-	await flush();
-	const tree = withoutTimers(() => rerender(view.component, props));
 
-	const shields = tree.children.filter((child) => child !== null && typeof child === "object" && child.props["data-handle-shield"] !== undefined);
-	assert.deepEqual(shields.map((shield) => shield.props["data-handle-shield"]), ["left", "right"]);
-	for (const shield of shields) {
-		assert.equal(shield.props["aria-hidden"], "true", "decoration only");
-		assert.equal(shield.props.style.position, "absolute");
-		assert.ok(shield.props.style.zIndex > 8, "above the shell handle, which sits at z-index 8");
-	}
-	assert.ok(shields[0].props.style.right !== undefined && shields[0].props.style.left === undefined, "the left band is anchored from the right edge");
-	assert.ok(shields[1].props.style.left !== undefined && shields[1].props.style.right === undefined, "the right band is anchored from the left edge");
-	assert.match(String(shields[0].props.style.right), /--dsh-chat-content-width/u, "positioned by the same axis the shell handle uses");
+	assert.equal(scrollCalls.length, 1, "the panel asks to be revealed once");
+	assert.equal(scrollCalls[0].block, "start", "aligned to the top, not the bottom the transcript was left at");
+	assert.equal(scrollCalls[0].inline, "nearest", "without disturbing the horizontal axis");
 });
+;
 
 test("fills the panel by proportional column shares instead of by content", async () => {
 	const { exports } = loadBundle();
