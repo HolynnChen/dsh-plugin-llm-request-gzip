@@ -136,6 +136,7 @@ The card lives in **Settings → Plugins → Configuration**, collapsed like eve
 
 - **Toggle** — compress this provider's model requests.
 - **Minimum body size (bytes)** — default `1024`. Smaller requests are sent as-is, and compression is skipped whenever it would not actually make the body smaller.
+- **Algorithm** — **brotli** by default, typically another 15–25% smaller than gzip on the JSON these adapters send. A request body has no negotiation, so if an endpoint answers a shape rejection (411/415/501) to a brotli body the request is retried as gzip — the adapter never sees a failure it would not have seen uncompressed — and that endpoint is remembered, so brotli is attempted there exactly once. Choose `gzip` to never attempt it.
 
 Each route's endpoint is shown next to it. Routes that share one endpoint are grouped, because that endpoint's traffic is compressed as soon as any one of them is enabled.
 
@@ -148,10 +149,13 @@ llm-request-gzip:
       enabled: true
       minBytes: 1024
       prewarm: true
+  encoding: auto
   prewarmHoldMs: 120000
   prewarmPoolSize: 3
   timing: true
 ```
+
+`encoding` is `auto` (prefer **brotli**) or `gzip`, settable section-wide or per provider.
 
 ### Pre-transmission (opt-in, per provider)
 

@@ -159,10 +159,13 @@ llm-request-gzip:
       enabled: true
       minBytes: 1024
       prewarm: true
+  encoding: auto
   prewarmHoldMs: 120000
   prewarmPoolSize: 3
   timing: true
 ```
+
+`encoding` 为 `auto`（**优先 brotli**）或 `gzip`，可在整节设置，也可按提供方单独设置。
 
 ### 预传输（按提供方开关，默认关闭）
 
