@@ -95,6 +95,25 @@ test("records each phase once", () => {
 	assert.equal(store.snapshot("s1")[0].sendMs, 10);
 });
 
+test("records the response encoding only when one was declared", () => {
+	const clock = fixedClock();
+	const encoded = opened(clock);
+	encoded.store.noteResponseEncoding(encoded.record, "gzip");
+	encoded.store.finish(encoded.record, clock.now());
+	assert.equal(encoded.store.snapshot("s1")[0].responseEncoding, "gzip");
+
+	const plain = opened(clock);
+	plain.store.noteResponseEncoding(plain.record, undefined);
+	plain.store.noteResponseEncoding(plain.record, "   ");
+	plain.store.finish(plain.record, clock.now());
+	assert.equal(plain.store.snapshot("s1")[0].responseEncoding, null, "an absent or blank header stays null");
+
+	const trimmed = opened(clock);
+	trimmed.store.noteResponseEncoding(trimmed.record, " gzip, br ");
+	trimmed.store.finish(trimmed.record, clock.now());
+	assert.equal(trimmed.store.snapshot("s1")[0].responseEncoding, "gzip, br");
+});
+
 test("accumulates response bytes as they arrive", () => {
 	const clock = fixedClock();
 	const { store, record } = opened(clock);

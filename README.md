@@ -42,12 +42,12 @@ stream begins ──▶ fetch() ──────▶ body sent ─────�
 | 生成 / generation | First token → stream end. |
 | tok/s | Output tokens ÷ the generation window. |
 | 请求体 / request body | `before → after` when the body was gzipped, otherwise the single serialized size. |
-| 响应体 / response body | Bytes actually received **on the wire** (so a gateway-compressed reply counts as what was transferred). |
+| 响应体 / response body | Bytes actually received **on the wire**, plus the response's `content-encoding` when it declares one — so a gzip-encoded reply is labelled rather than merely looking small. |
 | 总计 / total | Fetch call → stream end. |
 
-Hovering a row shows what does not fit: the preparation time (stream start → request issued) and the input/output token counts.
+Every column header explains itself on hover, and hovering a row shows what does not fit: the preparation time (stream start → request issued), the input/output token counts, and the response size with its encoding.
 
-The conversation column's own width handles are shell chrome, rendered for whichever view is active. This view covers exactly their two gutter bands so a stray drag over the table cannot resize the column; both bands lie outside the centred content column, so no data sits under them. That behaviour lives in `SHIELD_WIDTH` / `shieldLeft` / `shieldRight` in `lib/client.js` — remove those three and the panel behaves like every other view again.
+The conversation column's own width handles are shell chrome, rendered for whichever view is active. This view covers exactly their two gutter bands — down past the panel and beside the composer, because the handles span the whole conversation body — so a stray drag cannot resize the column. Both bands lie outside the centred content column, so no data sits under them. That behaviour lives in `SHIELD_WIDTH` / `shieldLeft` / `shieldRight` in `lib/client.js` — remove those three and the panel behaves like every other view again.
 
 ### Why this differs from the Trajectory's TTFT
 

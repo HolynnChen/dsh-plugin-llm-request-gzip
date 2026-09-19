@@ -15,7 +15,7 @@
 
 import assert from "node:assert/strict";
 import http from "node:http";
-import { gunzipSync } from "node:zlib";
+import { gunzipSync, gzipSync } from "node:zlib";
 import test from "node:test";
 import { apply, Config, NS } from "../lib/index.js";
 
@@ -502,6 +502,60 @@ test("measures the server phase on every request of a pooled connection", async 
 			assert.ok(measured.ttftMs !== null, `request ${measured.id} lost its TTFT`);
 			assert.ok(measured.responseBytes > 0, `request ${measured.id} counted no response bytes`);
 		}
+	} finally {
+		server.close();
+		harness.disposeAll();
+	}
+});
+
+test("reports the response content-encoding and counts wire bytes", async () => {
+	// A realistic stream: enough repeated frames that gzip clearly wins.
+	const frame = 'data: {"choices":[{"delta":{"content":"hello world"}}]}\n\n';
+	const payload = frame.repeat(60) + "data: [DONE]\n\n";
+	const compressed = gzipSync(Buffer.from(payload));
+	const server = http.createServer((req, res) => {
+		req.resume();
+		req.on("end", () => {
+			res.writeHead(200, { "content-type": "text/event-stream", "content-encoding": "gzip" });
+			res.end(compressed);
+		});
+	});
+	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const base = `http://127.0.0.1:${server.address().port}/v1`;
+	const harness = createHarness({});
+	try {
+		apply(harness.ctx);
+		const waterfall = harness.listeners.get("llm/stream")[0];
+		const inner = readChatStream(base, { messages: [{ role: "user", content: "hi" }] });
+		for await (const _chunk of waterfall({ provider: "alpha", model: "test-model", sessionId: "gzipped" }, () => inner)) {
+			// Drain.
+		}
+		const route = harness.routes.find((candidate) => candidate.methods.includes("GET"));
+		const payloadAnswer = await (await route.fetch(new Request("http://localhost/api/llm-request-gzip/timings?sessionId=gzipped"))).json();
+		const [measured] = payloadAnswer.measurements;
+		assert.equal(measured.responseEncoding, "gzip", "the wire encoding is read out of the diagnostic's header list");
+		assert.equal(measured.responseBytes, compressed.byteLength, "wire bytes, not the decoded body");
+		assert.ok(measured.responseBytes < Buffer.byteLength(payload), "the decoded stream is larger than what arrived");
+	} finally {
+		server.close();
+		harness.disposeAll();
+	}
+});
+
+test("leaves the response encoding null when the gateway does not compress", async () => {
+	const plan = { thinkMs: 5, firstTokenMs: 5, decodeMs: 10, chunks: 2, outputTokens: 3 };
+	const { server, base } = await sseServer(plan);
+	const harness = createHarness({});
+	try {
+		apply(harness.ctx);
+		const waterfall = harness.listeners.get("llm/stream")[0];
+		const inner = readChatStream(base, { messages: [{ role: "user", content: "hi" }] });
+		for await (const _chunk of waterfall({ provider: "alpha", model: "test-model", sessionId: "plain" }, () => inner)) {
+			// Drain.
+		}
+		const route = harness.routes.find((candidate) => candidate.methods.includes("GET"));
+		const answer = await (await route.fetch(new Request("http://localhost/api/llm-request-gzip/timings?sessionId=plain"))).json();
+		assert.equal(answer.measurements[0].responseEncoding, null);
 	} finally {
 		server.close();
 		harness.disposeAll();
