@@ -1164,3 +1164,26 @@ test("does nothing when there was never anything under the former name", () => {
 	apply(harness.ctx);
 	assert.deepEqual(harness.updates, [], "an empty section carries nothing");
 });
+
+test("reports a pre-transmitted request's compressed size and algorithm", async () => {
+	const { close, requests, base } = await recordingServer();
+	const harness = createHarness({ providers: { alpha: { enabled: true, minBytes: 0, prewarm: true } }, prewarmPoolSize: 1 });
+	const history = [{ role: "user", content: "y".repeat(20000) }];
+	try {
+		apply(harness.ctx);
+		await runStep(harness, base, "s1", history, "tool-calls");
+		assert.ok(await waitFor(() => requests.filter((entry) => !entry.completed && !entry.aborted).length === 1), "a request is held");
+		await runStep(harness, base, "s1", [...history, { role: "assistant", content: "ok" }], "tool-calls");
+
+		const held = requests[1];
+		assert.equal(held.encoding, "br", "the member went out compressed");
+		const measurement = (await readLedger(harness, "s1"))[1];
+		assert.notEqual(measurement.prewarm, null, "the row was served from the pool");
+		assert.equal(measurement.encoding, "br", "and it names the algorithm the member used");
+		assert.equal(measurement.compressed, true, "and it does not read as uncompressed");
+		assert.ok(measurement.sentBytes < measurement.requestBytes, "the wire size is smaller than the body");
+	} finally {
+		harness.disposeAll();
+		close();
+	}
+});
