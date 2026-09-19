@@ -1,0 +1,63 @@
+{
+  "name": "dsh-plugin-llm-request-gzip",
+  "version": "0.1.0",
+  "description": "Per-provider gzip request-body compression for DeepSeek Harness model calls, configurable in Settings > Plugins",
+  "type": "module",
+  "license": "MIT",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  },
+  "files": [
+    "lib/index.js",
+    "lib/compress.js",
+    "lib/client.js",
+    "README.md",
+    "README.zh.md"
+  ],
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "cordis",
+    "cordis-plugin",
+    "gzip",
+    "compression",
+    "llm",
+    "provider"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HolynnChen/dsh-plugin-llm-request-gzip.git"
+  },
+  "bugs": {
+    "url": "https://github.com/HolynnChen/dsh-plugin-llm-request-gzip/issues"
+  },
+  "homepage": "https://github.com/HolynnChen/dsh-plugin-llm-request-gzip#readme",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/host.test.mjs test/client.test.mjs"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.2"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2"
+  }
+}
