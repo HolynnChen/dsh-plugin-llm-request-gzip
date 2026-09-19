@@ -747,3 +747,35 @@ test("lays the providers out as one flat grid, four cells per route", async () =
 		assert.deepEqual(cells.map((cell) => cell.type), ["input", "span", "input", "input"], "switch, identity, switch, threshold");
 	}
 });
+
+test("keeps the plugin-level controls next to their labels", async () => {
+	const { exports } = loadBundle();
+	const harness = createClientContext();
+	exports.apply(harness.ctx);
+	const card = harness.registrationFor("settings.plugin.item");
+	const { ctl } = card.options.inject();
+	const collapsed = mount(card.component, { ctl });
+	await flush();
+	collapsed.children[0].props.onClick();
+	const body = rerender(card.component, { ctl }).children[1];
+
+	const collect = (node, predicate, found = []) => {
+		if (node === null || typeof node !== "object") return found;
+		if (Array.isArray(node)) {
+			for (const child of node) collect(child, predicate, found);
+			return found;
+		}
+		if (predicate(node)) found.push(node);
+		collect(node.children, predicate, found);
+		return found;
+	};
+
+	const pool = collect(body, (node) => node.type === "input" && node.props.type === "number" && typeof node.props.title === "string" && node.props.title.includes("预发请求"))[0];
+	assert.ok(pool !== undefined, "the pool field is offered");
+	assert.equal(pool.props.style.marginLeft, undefined, "no control is pushed to the far edge");
+	assert.equal(pool.props.style.justifySelf, undefined);
+
+	const line = collect(body, (node) => Array.isArray(node.children) && node.children.includes(pool))[0];
+	assert.ok(line !== undefined, "the field shares a line with its label");
+	assert.ok(line.children.some((child) => child !== null && typeof child === "object" && child.children?.[0] === "预传输池大小"), "and the label is right beside it");
+});
