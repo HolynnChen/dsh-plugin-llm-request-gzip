@@ -1,10 +1,13 @@
 # dsh-plugin-llm-request-gzip
 
-Per-provider **gzip request-body compression** for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) model calls, configured in the Settings panel.
+Two things for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) model calls:
+
+- **Gzip request-body compression**, per provider, configured in Settings → Plugins.
+- **Request timing breakdown** — a view beside the Trajectory that splits every model call into its phases, with tokens-per-second.
 
 > 中文文档：[README.zh.md](./README.zh.md)
 
-## What it actually does
+## Gzip: what it actually does
 
 This trips people up, so read it first:
 
@@ -16,6 +19,42 @@ This trips people up, so read it first:
 Measured: a 3043-byte chat-completions body becomes 79 bytes.
 
 Both shipped adapters (`dsh-llm-deepseek`, `dsh-llm-pi-ai`) call the global `fetch` directly and the adapter seam exposes no header hook, so this plugin owns that seam for the lifetime of its fiber and restores the original `fetch` when the plugin is stopped or removed.
+
+## Request timing
+
+A view of its own appears next to **Trajectory** in the conversation view switcher. It lists every model request of the current session, newest first, and splits each one:
+
+```
+stream begins ──▶ fetch() ──────▶ body sent ──────▶ first token ──────▶ end
+      │             │                │                  │              │
+      │        prepare           send            TTFT    │        generation
+      │                            └──── server ─────┘  │              │
+      └────────────────────────── total ───────────────────────────────┘
+```
+
+| Column | Meaning |
+| --- | --- |
+| 准备 / prepare | Stream start → the request being issued (body serialization, attachment work). |
+| 发送 / send | The request being issued → **the body fully sent**. |
+| 服务端 / server | Body sent → response headers received. |
+| 首 token / TTFT | Body sent → **first token**. |
+| 生成 / generation | First token → stream end. |
+| tok/s | Output tokens ÷ the generation window. |
+| 总计 / total | Fetch call → stream end. |
+
+Each row also carries the provider, model, purpose (compaction / title), whether the request was actually gzip-compressed, and its status while running or after a failure.
+
+### Why this differs from the Trajectory's TTFT
+
+The Trajectory's own timing panel measures TTFT from the **start of the step** (`firstTokenTime - stepStartTime`), which folds body serialization and request sending into the wait. The Trajectory is a shipped bundle with no extension point for that panel, so this breakdown is delivered as its own view instead — and its "发送" boundary is the part the Trajectory cannot show.
+
+### How it measures, and why nothing is guessed
+
+`send` comes from undici's own `undici:request:bodySent` diagnostic — the moment the transport finished writing the body — and `server` from `undici:request:headers`. Both are consumed through `node:diagnostics_channel`, so **the request is never modified to measure it**: the body keeps its `content-length` and no chunked encoding is introduced.
+
+The channels are process-wide, but each callback runs inside the async context that issued the request, so the plugin identifies the request from its own `AsyncLocalStorage` scope rather than from the channel. Events for other plugins' traffic are ignored, and a `FormData` Files API upload that precedes a chat request is not mistaken for it.
+
+Measurements are held in memory on the Host (last 100 per session, last 40 sessions) and served to the page over the product's own authenticated `/api` route. They are not persisted, so they do not survive a DSH restart.
 
 ## Requirements
 
@@ -124,17 +163,19 @@ Delete the `llm-request-gzip` entry from `cordis.patch.yml` (and the cloned dire
 npm test
 ```
 
-- `test/host.test.mjs` runs the real `apply()` against a fake Cordis context and a spied `globalThis.fetch`, covering schema resolution, the settings hook contract, `llm/stream` attribution, and the fetch rewrite. Its fixture deliberately reproduces the awkward case — two routes sharing one endpoint — to prove the switch is genuinely per-provider.
-- `test/client.test.mjs` executes the real browser bundle under a stubbed module loader, asserting that the bundle id matches the package name, that the card lands on the right slot key, and that reads and writes use the correct path operations and revisions.
+- `test/host.test.mjs` runs the real `apply()` against a fake Cordis context and a spied `globalThis.fetch`, covering schema resolution, the settings hook contract, `llm/stream` attribution, and the fetch rewrite. Its fixture deliberately reproduces the awkward case — two routes sharing one endpoint — to prove the switch is genuinely per-provider. It also measures a **real** request end to end: a local SSE endpoint whose think time, first-token delay and decode window are separated on purpose, driven through the plugin's real transport diagnostics.
+- `test/client.test.mjs` executes the real browser bundle under a stubbed module loader, asserting that the bundle id matches the package name, that both the settings card and the timing view land on the right slots, and that reads and writes use the correct path operations and revisions.
+- `test/timing.test.mjs` drives the phase arithmetic with injected clocks, so every boundary is asserted at an exact millisecond, including the cases where a phase is genuinely absent.
 
 ## Layout
 
 | File | Role |
 | --- | --- |
 | `install.sh` | One-command installer: clones the package into the profile and registers it in `cordis.patch.yml`. |
-| `lib/compress.js` | Decision core: policy compilation, endpoint index, attribution resolution, gzip plan, header rewriting. No Cordis, globals, or zlib, so it is directly unit-testable. |
-| `lib/index.js` | Host half: settings section, `llm/stream` attribution, `globalThis.fetch` patch and restore. |
-| `lib/client.js` | Browser half: the settings card. Plain CJS factory contract, no JSX or ESM syntax. |
+| `lib/compress.js` | Gzip decision core: policy compilation, endpoint index, attribution resolution, gzip plan, header rewriting. No Cordis, globals, or zlib, so it is directly unit-testable. |
+| `lib/timing.js` | Timing state machine: phase boundaries, throughput, per-session ring buffer, detached wire projection. Pure over injected clocks. |
+| `lib/index.js` | Host half: settings section, `llm/stream` attribution, the timing measurement and its authenticated `/api` route, `globalThis.fetch` patch and restore. |
+| `lib/client.js` | Browser half: the settings card and the request-timing view. Plain CJS factory contract, no JSX or ESM syntax. |
 
 ## License
 

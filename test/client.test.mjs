@@ -55,7 +55,7 @@ function loadBundle() {
 
 /** A fake client context that records the slot registration it receives. */
 function createClientContext() {
-	const harness = { registration: undefined };
+	const harness = { registrations: [] };
 	const ctx = {
 		remote: {
 			settings: {
@@ -106,18 +106,21 @@ function createClientContext() {
 			}
 		},
 		writes: [],
+		injected: [],
 		slots: {
 			inject(key, callback) {
-				ctx.injected = key;
+				ctx.injected.push(key);
 				callback();
 				return () => {};
 			},
 			register(options, component) {
-				harness.registration = { options, component };
+				harness.registrations.push({ options, component });
 				return () => {};
 			}
 		}
 	};
+	/** The one registration a given slot received. */
+	harness.registrationFor = (name) => harness.registrations.find((entry) => entry.options.name === name);
 	return Object.assign(harness, { ctx });
 }
 
@@ -133,9 +136,10 @@ test("registers the card on the namespace key the Plugins page dispatches", () =
 
 	const harness = createClientContext();
 	exports.apply(harness.ctx);
-	const { ctx, registration } = harness;
-	assert.equal(ctx.injected, "settings.plugin.item");
-	assert.equal(registration.options.name, "settings.plugin.item");
+	const { ctx } = harness;
+	const registration = harness.registrationFor("settings.plugin.item");
+	assert.deepEqual(ctx.injected, ["settings.plugin.item", "conversation.view"]);
+	assert.ok(registration !== undefined, "the settings card is registered");
 	assert.equal(registration.options.key, "llm-request-gzip", "the key must equal the served settings namespace");
 	assert.equal(typeof registration.component, "function");
 
@@ -148,7 +152,7 @@ test("joins the provider directory with the stored policy and both profile shape
 	const { exports } = loadBundle();
 	const harness = createClientContext();
 	exports.apply(harness.ctx);
-	const { ctl } = harness.registration.options.inject();
+	const { ctl } = harness.registrationFor("settings.plugin.item").options.inject();
 
 	const snapshot = await ctl.read();
 	assert.equal(snapshot.writable, true);
@@ -163,7 +167,7 @@ test("writes path-addressed ops with the revision it read", async () => {
 	const { exports } = loadBundle();
 	const harness = createClientContext();
 	exports.apply(harness.ctx);
-	const { ctl } = harness.registration.options.inject();
+	const { ctl } = harness.registrationFor("settings.plugin.item").options.inject();
 
 	await ctl.write("alpha", { enabled: true, minBytes: 2048 }, 7);
 	assert.deepEqual(harness.ctx.writes, [{
@@ -180,7 +184,71 @@ test("surfaces a refused write instead of reporting success", async () => {
 	const { exports } = loadBundle();
 	const harness = createClientContext();
 	exports.apply(harness.ctx);
-	const { ctl } = harness.registration.options.inject();
+	const { ctl } = harness.registrationFor("settings.plugin.item").options.inject();
 	harness.ctx.remote.settings.mutate = async () => ({ ok: false, error: { message: "stale revision" } });
 	await assert.rejects(() => ctl.write("alpha", { enabled: true }, 3), /stale revision/u);
+});
+
+test("registers the timing view beside the shipped Trajectory", () => {
+	const { exports } = loadBundle();
+	const harness = createClientContext();
+	exports.apply(harness.ctx);
+
+	const view = harness.registrationFor("conversation.view");
+	assert.ok(view !== undefined, "a conversation view is registered");
+	assert.equal(view.options.id, "request-timing", "a fresh id adds a tab rather than replacing the shipped Trajectory");
+	assert.ok(view.options.order > 10, "it renders after the Trajectory, which registers at order 10");
+	assert.equal(view.options.label(), "请求耗时");
+	assert.equal(typeof view.options.inject().loadTimings, "function");
+	assert.equal(typeof view.component, "function");
+});
+
+test("reads the timing ledger over the same-origin API route", async () => {
+	const { exports } = loadBundle();
+	const harness = createClientContext();
+	exports.apply(harness.ctx);
+	const { loadTimings } = harness.registrationFor("conversation.view").options.inject();
+
+	const calls = [];
+	const realFetch = globalThis.fetch;
+	globalThis.fetch = async (url, init) => {
+		calls.push({ url: String(url), init });
+		return Response.json({ measurements: [{ id: 1, sendMs: 12 }] });
+	};
+	try {
+		assert.deepEqual(await loadTimings("session-1"), [{ id: 1, sendMs: 12 }]);
+		assert.equal(calls[0].url, "/api/llm-request-gzip/timings?sessionId=session-1", "same-origin, so the browser session cookie rides along");
+	} finally {
+		globalThis.fetch = realFetch;
+	}
+});
+
+test("surfaces an unavailable ledger instead of reporting it empty", async () => {
+	const { exports } = loadBundle();
+	const harness = createClientContext();
+	exports.apply(harness.ctx);
+	const { loadTimings } = harness.registrationFor("conversation.view").options.inject();
+
+	const realFetch = globalThis.fetch;
+	globalThis.fetch = async () => new Response("unauthorized", { status: 401 });
+	try {
+		await assert.rejects(() => loadTimings("session-1"), /HTTP 401/u);
+	} finally {
+		globalThis.fetch = realFetch;
+	}
+});
+
+test("tolerates a ledger answer that carries no measurements", async () => {
+	const { exports } = loadBundle();
+	const harness = createClientContext();
+	exports.apply(harness.ctx);
+	const { loadTimings } = harness.registrationFor("conversation.view").options.inject();
+
+	const realFetch = globalThis.fetch;
+	globalThis.fetch = async () => Response.json({});
+	try {
+		assert.deepEqual(await loadTimings(undefined), [], "a request without a session still reads as an empty ledger");
+	} finally {
+		globalThis.fetch = realFetch;
+	}
 });

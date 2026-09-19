@@ -14,6 +14,7 @@
  */
 
 import assert from "node:assert/strict";
+import http from "node:http";
 import { gunzipSync } from "node:zlib";
 import test from "node:test";
 import { apply, Config, NS } from "../lib/index.js";
@@ -42,7 +43,18 @@ const NEIGHBOUR_NAMESPACES = {
 function createHarness(section = {}) {
 	const listeners = new Map();
 	const effects = [];
+	const routes = [];
 	let install;
+
+	/** The `connection.fetch` face the plugin registers its timing route on. */
+	const connection = {
+		fetch: {
+			register(route) {
+				routes.push(route);
+				return () => {};
+			}
+		}
+	};
 
 	const settings = {
 		installSection(owner, ns, schema, base, hooks) {
@@ -76,12 +88,12 @@ function createHarness(section = {}) {
 			return () => {};
 		},
 		inject(names, callback) {
-			callback({ settings });
+			callback({ settings, connection });
 			return () => {};
 		}
 	};
 
-	return { ctx, listeners, disposeAll: () => { for (const dispose of effects) dispose(); } };
+	return { ctx, listeners, routes, disposeAll: () => { for (const dispose of effects) dispose(); } };
 }
 
 /** Install a spy transport, returning the recorded calls and a restore hook. */
@@ -255,3 +267,147 @@ test("the schema keeps the section valid for dynamic provider routes", () => {
 	assert.equal(resolved.providers.gamma.minBytes, 64);
 	assert.deepEqual(Config({}).providers, {}, "an absent section resolves to no policies");
 });
+
+//#region end-to-end timing
+
+/** Resolve after `ms`. */
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * An OpenAI-style SSE endpoint whose phases are separated in time on purpose,
+ * so each measured boundary can be attributed to the server behaviour that
+ * produced it: think time before the response headers, then a gap before the
+ * first token, then decode time across the remaining chunks.
+ */
+async function sseServer(plan) {
+	const server = http.createServer(async (req, res) => {
+		await new Promise((resolve) => {
+			req.on("data", () => {});
+			req.on("end", resolve);
+		});
+		await delay(plan.thinkMs);
+		res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store" });
+		res.flushHeaders();
+		await delay(plan.firstTokenMs);
+		const frame = (payload) => `data: ${JSON.stringify(payload)}\n\n`;
+		for (let index = 0; index < plan.chunks; index++) {
+			res.write(frame({ choices: [{ delta: { content: `t${index}` } }] }));
+			if (index < plan.chunks - 1) await delay(plan.decodeMs / plan.chunks);
+		}
+		res.write(frame({ usage: { prompt_tokens: 12, completion_tokens: plan.outputTokens } }));
+		res.write("data: [DONE]\n\n");
+		res.end();
+	});
+	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+	return { server, base: `http://127.0.0.1:${server.address().port}/v1` };
+}
+
+/**
+ * A minimal OpenAI-compatible adapter: the real `fetch`, real SSE parsing, real
+ * `StreamChunk`s. Only the provider-specific logic is absent, which is the
+ * point — the plugin measures the transport, not the adapter.
+ */
+async function* readChatStream(base, body) {
+	const response = await fetch(`${base}/chat/completions`, {
+		method: "POST",
+		headers: { "content-type": "application/json", accept: "text/event-stream" },
+		body: JSON.stringify(body)
+	});
+	const decoder = new TextDecoder();
+	let buffer = "";
+	for await (const piece of response.body) {
+		buffer += decoder.decode(piece, { stream: true });
+		let cut;
+		while ((cut = buffer.indexOf("\n\n")) !== -1) {
+			const frame = buffer.slice(0, cut);
+			buffer = buffer.slice(cut + 2);
+			const line = frame.split("\n").find((entry) => entry.startsWith("data: "));
+			if (line === undefined) continue;
+			const payload = line.slice(6);
+			if (payload === "[DONE]") {
+				yield { type: "finish", reason: { kind: "stop" } };
+				return;
+			}
+			const parsed = JSON.parse(payload);
+			if (parsed.usage !== undefined) {
+				yield { type: "usage", usage: { inputTokens: parsed.usage.prompt_tokens, outputTokens: parsed.usage.completion_tokens } };
+				continue;
+			}
+			const text = parsed.choices?.[0]?.delta?.content;
+			if (typeof text === "string" && text.length > 0) yield { type: "text-delta", index: 0, text };
+		}
+	}
+}
+
+test("measures a real request end to end from transport diagnostics", async () => {
+	const plan = { thinkMs: 60, firstTokenMs: 60, decodeMs: 120, chunks: 4, outputTokens: 40 };
+	const { server, base } = await sseServer(plan);
+	// No provider policy: timing must not depend on gzip being enabled.
+	const harness = createHarness({});
+	try {
+		apply(harness.ctx);
+		const waterfall = harness.listeners.get("llm/stream")[0];
+		const inner = readChatStream(base, { messages: [{ role: "user", content: "x".repeat(50000) }] });
+		const received = [];
+		for await (const chunk of waterfall({ provider: "alpha", model: "test-model", sessionId: "session-1" }, () => inner)) received.push(chunk);
+
+		assert.equal(received.filter((chunk) => chunk.type === "text-delta").length, 4, "the stream is passed through untouched");
+		assert.equal(received.at(-1).type, "finish");
+
+		const route = harness.routes.find((candidate) => candidate.methods.includes("GET"));
+		assert.ok(route !== undefined, "the timing route is registered");
+		assert.equal(route.path, "/api/llm-request-gzip/timings");
+		const answer = await route.fetch(new Request("http://localhost/api/llm-request-gzip/timings?sessionId=session-1"));
+		const payload = await answer.json();
+
+		assert.equal(payload.measurements.length, 1);
+		const [measured] = payload.measurements;
+		assert.equal(measured.provider, "alpha");
+		assert.equal(measured.model, "test-model");
+		assert.equal(measured.sessionId, "session-1");
+		assert.equal(measured.status, "complete");
+		assert.equal(measured.attempts, 1);
+		assert.equal(measured.outputTokens, 40);
+		assert.equal(measured.compressed, null, "gzip is off for this provider");
+
+		assert.ok(measured.sendMs !== null && measured.sendMs >= 0, "upload completion was observed");
+		assert.ok(measured.sendMs < plan.thinkMs, `a 50 KB upload finishes before the server answers (got ${measured.sendMs}ms)`);
+		assert.ok(measured.serverMs >= plan.thinkMs - 25, `server think time is visible (got ${measured.serverMs}ms)`);
+		assert.ok(measured.ttftMs >= plan.thinkMs + plan.firstTokenMs - 30, `TTFT is measured from bodySent (got ${measured.ttftMs}ms)`);
+		assert.ok(measured.generationMs >= plan.decodeMs - 40, `decode window is visible (got ${measured.generationMs}ms)`);
+		assert.ok(measured.totalMs >= plan.thinkMs + plan.firstTokenMs, "total covers every phase");
+		assert.ok(measured.tokensPerSecond > 0, "throughput is derived from the decode window");
+
+		// A different session must not see this one's requests.
+		const other = await (await route.fetch(new Request("http://localhost/api/llm-request-gzip/timings?sessionId=session-2"))).json();
+		assert.deepEqual(other.measurements, []);
+	} finally {
+		server.close();
+		harness.disposeAll();
+	}
+});
+
+test("records the compression actually applied to a measured request", async () => {
+	const plan = { thinkMs: 10, firstTokenMs: 10, decodeMs: 20, chunks: 2, outputTokens: 5 };
+	const { server, base } = await sseServer(plan);
+	const harness = createHarness({ providers: { alpha: { enabled: true, minBytes: 0 } } });
+	try {
+		apply(harness.ctx);
+		const waterfall = harness.listeners.get("llm/stream")[0];
+		const inner = readChatStream(base, { messages: [{ role: "user", content: "x".repeat(20000) }] });
+		for await (const _chunk of waterfall({ provider: "alpha", model: "test-model", sessionId: "s1" }, () => inner)) {
+			// Drain.
+		}
+		const route = harness.routes.find((candidate) => candidate.methods.includes("GET"));
+		const payload = await (await route.fetch(new Request("http://localhost/api/llm-request-gzip/timings?sessionId=s1"))).json();
+		const [measured] = payload.measurements;
+		assert.ok(measured.compressed !== null, "the compressed sizes are recorded");
+		assert.ok(measured.compressed.compressedBytes < measured.compressed.originalBytes);
+		assert.ok(measured.sendMs !== null, "timing still works alongside the gzip rewrite");
+	} finally {
+		server.close();
+		harness.disposeAll();
+	}
+});
+
+//#endregion

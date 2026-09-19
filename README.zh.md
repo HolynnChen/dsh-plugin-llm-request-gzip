@@ -1,10 +1,13 @@
 # dsh-plugin-llm-request-gzip
 
-按提供方（provider）为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的模型请求启用 **gzip 请求体压缩**，并在设置面板中配置。
+为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的模型请求提供两件事：
+
+- **按提供方的 gzip 请求体压缩**，在 设置 → 插件 中配置。
+- **请求耗时分解** —— 与「轨迹」并列的一个视图，把每次模型调用拆成各阶段，并给出每秒 token 数。
 
 > English docs: [README.md](./README.md)
 
-## 它到底做什么
+## gzip：它到底做什么
 
 这里有个容易误解的点，先看表格：
 
@@ -17,6 +20,45 @@
 
 DSH 的两个 adapter（`dsh-llm-deepseek`、`dsh-llm-pi-ai`）都直接调用全局 `fetch`，适配器 seam 没有 header 钩子，
 因此本插件在自身 fiber 生命周期内接管该 seam，并在插件停止或移除时还原原始 `fetch`。
+
+## 请求耗时分解
+
+会话视图切换器里，「请求耗时」与「轨迹」并列。它按时间倒序列出当前会话的每次模型请求，并把每次调用拆开：
+
+```
+流开始 ──▶ fetch() ──────▶ 请求体发送完毕 ──────▶ 首个 token ──────▶ 结束
+   │          │                  │                    │              │
+   │       准备             发送           首 token     │          生成
+   │                            └──── 服务端 ────┘     │              │
+   └──────────────────────── 总计 ───────────────────────────────────┘
+```
+
+| 列 | 含义 |
+| --- | --- |
+| 准备 | 流开始 → 请求真正发出（请求体序列化、附件处理）。 |
+| 发送 | 请求发出 → **请求体全部发送完毕**。 |
+| 服务端 | 发送完毕 → 收到响应头。 |
+| 首 token | 发送完毕 → **首个 token**。 |
+| 生成 | 首个 token → 流结束。 |
+| tok/s | 输出 token 数 ÷ 生成区间。 |
+| 总计 | 发出请求 → 流结束。 |
+
+每行还会带上提供方、模型、用途（压缩/标题）、该请求是否真的被 gzip 压缩，以及运行中或失败后的状态。
+
+### 为什么和「轨迹」里的 TTFT 不一样
+
+轨迹自带的耗时面板是从 **step 开始**算 TTFT 的（`firstTokenTime - stepStartTime`），把请求体序列化和发送都算进了等待里。
+轨迹是内置 bundle，那个面板没有暴露扩展点，所以本分解做成独立视图；而其中的「发送」边界正是轨迹无法展示的部分。
+
+### 怎么测的，以及为什么没有估算
+
+「发送」取自 undici 自己的 `undici:request:bodySent` 诊断——传输层写完请求体的那一刻；「服务端」取自 `undici:request:headers`。
+两者都通过 `node:diagnostics_channel` 消费，因此**测量本身完全不改动请求**：请求体保留 `content-length`，也不会被改成 chunked 编码。
+
+这些 channel 是进程级的，但每个回调都运行在发起该请求的异步上下文里，所以插件是靠自己的 `AsyncLocalStorage` 作用域来归属请求，而不是靠 channel。
+其它插件的流量会被忽略，聊天请求之前可能发生的 `FormData` 文件上传也不会被误认为它。
+
+测量数据保存在 Host 内存中（每会话最近 100 条、最近 40 个会话），通过产品自身的 `/api` 鉴权路由提供给页面。它不持久化，因此 DSH 重启后不再保留。
 
 ## 环境要求
 
@@ -137,18 +179,21 @@ npm test
 
 - `test/host.test.mjs`：用假 Cordis context + 被监视的 `globalThis.fetch` 跑通真实 `apply()`，
   覆盖 schema 解析、settings 钩子契约、`llm/stream` 归属与 fetch 重写。其 fixture 特意复现
-  「两个路由共用一个 endpoint」这一棘手场景，用来证明开关确实是按提供方生效的。
+  「两个路由共用一个 endpoint」这一棘手场景，用来证明开关确实是按提供方生效的。它还会端到端测量一次**真实**请求：
+  本地 SSE 端点把思考时间、首 token 延迟、解码窗口刻意分开，再经插件真实的传输层诊断跑一遍。
 - `test/client.test.mjs`：在 stub 的模块加载器下执行真实浏览器 bundle，验证 bundle id 与 package name 一致、
-  卡片落在正确的 slot key 上，以及读写的路径操作与 revision 正确。
+  设置卡片与耗时视图都落在正确的 slot 上，以及读写的路径操作与 revision 正确。
+- `test/timing.test.mjs`：用注入时钟驱动阶段运算，每个边界都精确到毫秒断言，含「某个阶段确实不存在」的情形。
 
 ## 结构
 
 | 文件 | 作用 |
 | --- | --- |
 | `install.sh` | 一行命令安装器：克隆到 profile 并注册到 `cordis.patch.yml` |
-| `lib/compress.js` | 决策核心：策略编译、endpoint 索引、归属解析、gzip 计划、header 改写。不依赖 Cordis / 全局对象 / zlib，可直接单测 |
-| `lib/index.js` | Host half：settings 段、`llm/stream` 归属、`globalThis.fetch` 补丁与还原 |
-| `lib/client.js` | 浏览器 half：设置卡片。CJS factory 合约，纯 JS，无 JSX / ESM |
+| `lib/compress.js` | gzip 决策核心：策略编译、endpoint 索引、归属解析、gzip 计划、header 改写。不依赖 Cordis / 全局对象 / zlib，可直接单测 |
+| `lib/timing.js` | 耗时状态机：阶段边界、吞吐、每会话环形缓冲、脱敏的线上投影。对注入时钟是纯函数 |
+| `lib/index.js` | Host half：settings 段、`llm/stream` 归属、耗时测量及其鉴权 `/api` 路由、`globalThis.fetch` 补丁与还原 |
+| `lib/client.js` | 浏览器 half：设置卡片与请求耗时视图。CJS factory 合约，纯 JS，无 JSX / ESM |
 
 ## 许可
 
