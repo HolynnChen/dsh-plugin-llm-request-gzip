@@ -938,6 +938,12 @@ async function waitForLedger(harness, sessionId, count, timeoutMs = 1500) {
 	}
 }
 
+/** Call the timing route and keep the response, status included. */
+async function callLedger(harness, sessionId) {
+	const route = harness.routes.find((candidate) => candidate.methods.includes("GET"));
+	return route.fetch(new Request(`http://localhost/api/model-request-accelerator/timings?sessionId=${sessionId}`));
+}
+
 /** Read the timing route of a harness. */
 async function fetchLedger(harness, sessionId) {
 	const route = harness.routes.find((candidate) => candidate.methods.includes("GET"));
@@ -1358,5 +1364,45 @@ test("keeps pre-transmitted requests compressed after one has been claimed", asy
 	} finally {
 		harness.disposeAll();
 		close();
+	}
+});
+
+test("answers for a session that has no records at all", async () => {
+	// The most ordinary state there is: nothing has run in this session yet. The
+	// panel must get an empty list, not an error.
+	const harness = createHarness({ providers: {} });
+	try {
+		apply(harness.ctx);
+		const answer = await callLedger(harness, "never-ran");
+		assert.equal(answer.status, 200, "an empty session is not an error");
+		assert.deepEqual((await answer.json()).measurements, []);
+	} finally {
+		harness.disposeAll();
+	}
+});
+
+test("answers for a session whose stored ledger cannot be read", async () => {
+	// A storage fault must degrade to "no history", never to a broken panel.
+	const storage = {
+		domain: {
+			async open() {
+				return {
+					table() {
+						throw new Error("storage is unavailable");
+					},
+					close: async () => {}
+				};
+			}
+		}
+	};
+	const harness = createHarness({ providers: {} }, { storage });
+	try {
+		apply(harness.ctx);
+		assert.ok(await waitFor(() => harness.routes.length > 0));
+		const answer = await callLedger(harness, "s1");
+		assert.equal(answer.status, 200, "a store that will not read is not a panel error");
+		assert.deepEqual((await answer.json()).measurements, []);
+	} finally {
+		harness.disposeAll();
 	}
 });
