@@ -149,8 +149,7 @@ git clone https://github.com/HolynnChen/dsh-plugin-model-request-accelerator.git
 - **开关**：该提供方的模型请求是否压缩。
 - **最小压缩体积（字节）**：默认 `1024`。更小的请求原样发送；压缩后若没有真正变小也会放弃压缩。
 
-每行会显示该路由的 endpoint。共用同一 endpoint 的路由会被归为一组，因为只要其中任意一个被启用，
-该 endpoint 的流量就会被压缩。
+每行会显示该路由的 endpoint。共用同一 endpoint 的路由会被归为一组，但它们**各自独立配置** ✓：插件把每一次模型调用归属到发出它的提供方 ✓，由**该提供方自己的开关**决定行为 ✓。
 
 设置持久化在 `settings.yaml` 的 `model-request-accelerator` 段：
 
@@ -214,7 +213,7 @@ model-request-accelerator: sg request compressed 3043 -> 79 bytes
 ## 提供方归属是如何判定的
 
 `fetch` 这一层只能看到请求 URL。当多个提供方路由共用一个 endpoint 时——例如 `llm-deepseek` 与
-`llm-pi-ai.providers.sg` 都指向同一个网关——单靠 URL 无法区分，此时「按提供方」的开关会悄悄退化成「按 endpoint」。
+`llm-pi-ai.providers.sg` 都指向同一个网关——单靠 URL 无法区分；但插件是按**发出这次请求的提供方**归属的（而不是按 URL 猜），所以「按提供方」的开关仍然各自生效 ✓，只有请求完全无法归属时，才会退回「按 endpoint」判断 ✓。
 
 因此插件挂到 `llm/stream` waterfall 上，把该次流式调用的 provider 绑定进 `AsyncLocalStorage` 作用域。
 每次迭代器恢复都在该作用域内执行，所以这个身份能穿过 adapter 内部的 `await`（图片序列化、文件上传），
