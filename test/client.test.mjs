@@ -645,7 +645,6 @@ test("starts at the top when the view is opened", () => {
 	assert.equal(scrollCalls[0].block, "start", "aligned to the top, not the bottom the transcript was left at");
 	assert.equal(scrollCalls[0].inline, "nearest", "without disturbing the horizontal axis");
 });
-;
 
 test("fills the panel by proportional column shares instead of by content", async () => {
 	const { exports } = loadBundle();
