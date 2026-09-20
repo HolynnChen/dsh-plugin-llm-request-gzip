@@ -233,7 +233,7 @@ model-request-accelerator: sg request compressed 3043 -> 79 bytes
 
 ## 每个 endpoint 学到了什么
 
-设置卡片会**逐个 endpoint** 显示真实流量已经确定的事情 ✓：压缩 body 是否被拒绝过（因此 brotli 是否已让位给 gzip ✓）、预传输是否因为该 endpoint 不接受 chunked 请求体而被停用 ✓、以及压缩连续失败了几次 ✓。这是**观测记录**而不是探测 ✓ —— 为了得到它不会发出任何请求 ✓；而 `scripts/probe-encodings.mjs` 仍然是在**还没有流量之前**把这个问题问清楚的方式 ✓。
+设置卡片会**逐个 endpoint** 显示真实流量已经确定的事情 ✓：压缩 body 是否被拒绝过（因此 brotli 是否已让位给 gzip ✓）、预传输是否因为该 endpoint 不接受 chunked 请求体而被停用 ✓、以及压缩连续失败了几次 ✓。这是**观测记录**而不是探测 ✓ —— 为了得到它不会发出任何请求 ✓；而且它**在没有任何可报告的事情时保持沉默** ✓ —— 一切正常的 endpoint 就是什么都不显示 ✓。而 `scripts/probe-encodings.mjs` 仍然是在**还没有流量之前**把这个问题问清楚的方式 ✓。
 
 ## 做不到的事
 
