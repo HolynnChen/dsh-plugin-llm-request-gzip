@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-model-request-accelerator",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Gzip request-body compression and request timing breakdown for DeepSeek Harness model calls",
   "type": "module",
   "license": "MIT",
@@ -30,7 +30,10 @@
     "lib/prewarm.js",
     "lib/client.js",
     "README.md",
-    "README.zh.md"
+    "README.zh.md",
+    "lib",
+    "install.sh",
+    "scripts"
   ],
   "keywords": [
     "dsh",
