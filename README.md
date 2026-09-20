@@ -2,23 +2,24 @@
 
 **模型请求加速 / model request accelerator** — compress model request bodies, pre-transmit the shared history, and break down where each request spends its time.
 
-Two things for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) model calls:
+Three things for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) model calls, each configurable per provider in Settings → Plugins:
 
-- **Gzip request-body compression**, per provider, configured in Settings → Plugins.
+- **Request-body compression** — brotli, falling back to gzip — which shrinks what a relay has to chew through before it dispatches.
+- **Pre-transmission** — the shared history goes onto the wire before the request that needs it exists, so a step uploads only its increment.
 - **Request timing breakdown** — a view beside the Trajectory that splits every model call into its phases, with tokens-per-second.
 
 > 中文文档：[README.zh.md](./README.zh.md)
 
-## Gzip: what it actually does
+## Compression: what it actually does
 
 This trips people up, so read it first:
 
 | Direction | Default today | This plugin |
 | --- | --- | --- |
 | Response (downstream) | Node's undici `fetch` **already sends** `accept-encoding: gzip, deflate` and decompresses the reply automatically | Does nothing — there is nothing to enable |
-| Request (upstream) | Not compressed; a JSON body carrying a long context and base64 images is uploaded as-is | **Compresses it** and adds `content-encoding: gzip` |
+| Request (upstream) | Not compressed; a JSON body carrying a long context and base64 images is uploaded as-is | **Compresses it** and adds `content-encoding: br`, or `gzip` where brotli is refused |
 
-Measured: a 3043-byte chat-completions body becomes 79 bytes.
+Measured on a real session: a 3.8 MB request body becomes 1.46 MB (38%), and the increment the request still has to write at claim time is a few hundred bytes.
 
 Both shipped adapters (`dsh-llm-deepseek`, `dsh-llm-pi-ai`) call the global `fetch` directly and the adapter seam exposes no header hook, so this plugin owns that seam for the lifetime of its fiber and restores the original `fetch` when the plugin is stopped or removed.
 
@@ -37,15 +38,15 @@ stream begins ──▶ fetch() ──────▶ body sent ─────�
 | Column | Meaning |
 | --- | --- |
 | 时间 / time | When the request was issued, to the second. |
-| 提供方 / 模型 | Provider route, model, purpose (compaction or session title), a `gzip` chip when the body was really compressed, and a running or failed badge. |
+| 提供方 / 模型 | Provider route, model, purpose (compaction or session title), a `br` or `gzip` chip naming the algorithm actually used, and a running or failed badge. |
 | 发送 / send | The request being issued → **the body fully sent**. |
 | 服务端 / server | Body sent → response headers received. |
 | 首token | Wait until the first token: from the request being issued, or — for a pre-transmitted row — from the member being claimed. The server's own think time (from the body being sent) is in the row tooltip. |
 | 生成 / generation | First token → stream end. |
 | tok/s | Output tokens ÷ the generation window. |
 | 缓存 / cache | Share of the prompt the provider served from its prefix cache. `inputTokens` counts *uncached* input only, so the prompt is cached + uncached and the rate is cached ÷ (cached + uncached); the raw counts are on hover. |
-| 请求体 / request body | `before → after` when the body was gzipped, otherwise the single serialized size. |
-| 响应体 / response body | Bytes actually received **on the wire**, plus the response's `content-encoding` when it declares one — so a gzip-encoded reply is labelled rather than merely looking small. A `–` means no chunk was attributed at all, which is a wiring fault to see rather than an empty reply. |
+| 请求体 / request body | `before → after` when the body was compressed, otherwise the single serialized size. |
+| 响应体 / response body | Bytes actually received **on the wire**, plus the response's `content-encoding` when it declares one — so a compressed reply is labelled rather than merely looking small. A `–` means no chunk was attributed at all, which is a wiring fault to see rather than an empty reply. |
 | 总计 / total | Fetch call → stream end. |
 
 Every column header explains itself on hover, and hovering a row shows what does not fit: the preparation time (stream start → request issued), the input/output token counts, and the response size with its encoding.
@@ -256,7 +257,7 @@ The plugin sits at `fetch`, so it only ever sees requests that go through it, an
 
 ## Updating
 
-The plugin carries a three-part version (`package.json`, currently `1.3.1`), and the settings card shows it with a button. **Opening the card checks by itself** and says so — a check that ran in the last five minutes is reused rather than repeated, and the button always asks afresh. **检查更新** asks the Host for the version published on the repository's `main` branch and compares the two; when the published one is newer the button becomes **更新到 X**.
+The plugin carries a three-part version (`package.json`, currently `1.3.2`), and the settings card shows it with a button. **Opening the card checks by itself** and says so — a check that ran in the last five minutes is reused rather than repeated, and the button always asks afresh. **检查更新** asks the Host for the version published on the repository's `main` branch and compares the two; when the published one is newer the button becomes **更新到 X**.
 
 The update itself is a fast-forward pull in the plugin's own directory — exactly what the installer does — run without a shell and with a timeout. A version that cannot be parsed on either side is never treated as newer, so a typo cannot offer a downgrade. **After an update the plugin still runs the old code until `dsh web` is restarted**; the card says so.
 
