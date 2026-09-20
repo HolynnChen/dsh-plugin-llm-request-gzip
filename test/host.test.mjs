@@ -1206,8 +1206,6 @@ test("reports a pre-transmitted request's compressed size and algorithm", async 
 	}
 });
 
-
-
 test("writes each session's ledger and loads it back", async () => {
 	const { close, base } = await recordingServer();
 	const storage = fakeStorage();
@@ -1239,7 +1237,7 @@ test("writes each session's ledger and loads it back", async () => {
 	}
 });
 
-test("a session with no stored rows still works, and never overwrites live ones", async () => {
+test("serves a session's stored rows", async () => {
 	const storage = fakeStorage({ s1: { updatedAt: 1, rows: [{ id: 1, provider: "old", model: null, totalMs: 5 }] } });
 	const harness = createHarness({ providers: {} }, { storage });
 	try {
@@ -1249,6 +1247,27 @@ test("a session with no stored rows still works, and never overwrites live ones"
 		assert.equal(rows[0].provider, "old", "and it is the stored one");
 	} finally {
 		harness.disposeAll();
+	}
+});
+
+test("numbers a live record past a session's stored history", async () => {
+	// The panel can be opened after the session has already run something, so a live
+	// record may be numbered before its stored history is found. Without
+	// renumbering, the two would share an id and the panel would show one twice.
+	const storage = fakeStorage({ s1: { updatedAt: 1, rows: [{ id: 7, provider: "old", model: null, totalMs: 5 }] } });
+	const { close, base } = await recordingServer();
+	const harness = createHarness({ providers: {} }, { storage });
+	try {
+		apply(harness.ctx);
+		await runStep(harness, base, "s1", [{ role: "user", content: "live" }], "stop");
+
+		const rows = await waitForLedger(harness, "s1", 2);
+		assert.equal(rows.length, 2, "the stored row and the live one are both served");
+		assert.equal(rows[0].provider, "old", "the stored row keeps its place at the front");
+		assert.notEqual(rows[0].id, rows[1].id, "and the live row was renumbered rather than colliding with it");
+	} finally {
+		harness.disposeAll();
+		close();
 	}
 });
 
