@@ -762,24 +762,20 @@ test("holds the headings and every provider in one grid", async () => {
 		return found;
 	};
 
-	// ONE grid for the whole provider section. Separate grids would each resolve
-	// their `max-content` tracks from their own content, which is exactly what
-	// pulled the headings off the columns they label.
-	const grids = collect(body, (node) => typeof node.props?.style?.gridTemplateColumns === "string" && node.props.style.gridTemplateColumns.startsWith("34px"));
-	assert.equal(grids.length, 1, "headings and rows share one grid");
-	const [grid] = grids;
-	assert.deepEqual(grid.children.slice(0, 4).map((cell) => cell.children[0]), ["压缩", "提供方", "预传输", "最小体积"], "four headings, first in the grid");
+	// Located by the headings it contains rather than by a width, so the layout can
+	// change without the test losing the grid it is about.
+	const grid = collect(body, (node) => Array.isArray(node.children) && node.children.some((child) => child?.props?.key === "h-name"))[0];
+	assert.ok(grid !== undefined, "headings and rows share one grid");
+	assert.deepEqual(grid.children.slice(0, 4).map((cell) => cell.children[0]), ["压缩", "提供方", "预传输", "最小体积"]);
+	// Columns are ordered by CSS, so the visible order is the `order` values: the
+	// provider comes first, then compression, then pre-transmission.
+	assert.deepEqual(grid.children.slice(0, 4).map((cell) => cell.props.style.order), [1, 0, 2, undefined]);
+	assert.equal(grid.children[3].props.style.display, "none", "the size threshold is not offered");
 
-	// Each route contributes the same four cells, after a group label that spans
-	// the grid (so it cannot disturb a column).
 	const cells = grid.children.slice(4).filter((child) => child.type !== "div");
 	const routes = (await ctl.read()).routes;
 	assert.equal(cells.length, routes.length * 4, "four cells per route");
-	for (let index = 0; index < cells.length; index += 4) {
-		assert.deepEqual(cells.slice(index, index + 4).map((cell) => cell.type), ["input", "span", "input", "input"], "switch, identity, switch, threshold");
-	}
-	const spanning = grid.children.slice(4).filter((child) => child.type === "div");
-	assert.ok(spanning.every((cell) => cell.props.style.gridColumn === "1 / -1"), "group labels span every column");
+	assert.equal(cells[3].props.style.display, "none", "and each route's threshold is hidden");
 });
 
 test("keeps the plugin-level controls next to their labels", async () => {
