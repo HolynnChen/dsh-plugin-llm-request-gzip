@@ -343,11 +343,6 @@ async function sseServer(plan) {
 	return { server, base: `http://127.0.0.1:${server.address().port}/v1` };
 }
 
-/**
- * A minimal OpenAI-compatible adapter: the real `fetch`, real SSE parsing, real
- * `StreamChunk`s. Only the provider-specific logic is absent, which is the
- * point — the plugin measures the transport, not the adapter.
- */
 /** A body the test already serialized itself, sent verbatim. */
 class SerializedBody {
 	constructor(text) {
@@ -358,6 +353,11 @@ class SerializedBody {
 	}
 }
 
+/**
+ * A minimal OpenAI-compatible adapter: the real `fetch`, real SSE parsing, real
+ * `StreamChunk`s. Only the provider-specific logic is absent, which is the
+ * point — the plugin measures the transport, not the adapter.
+ */
 async function* readChatStream(base, body, finishKind = "stop") {
 	const response = await fetch(`${base}/chat/completions`, {
 		method: "POST",
@@ -405,7 +405,7 @@ async function* readChatStream(base, body, finishKind = "stop") {
 test("measures a real request end to end from transport diagnostics", async () => {
 	const plan = { thinkMs: 60, firstTokenMs: 60, decodeMs: 120, chunks: 4, outputTokens: 40 };
 	const { server, base } = await sseServer(plan);
-	// No provider policy: timing must not depend on gzip being enabled.
+	// No provider policy: timing must not depend on compression being enabled.
 	const harness = createHarness({});
 	try {
 		apply(harness.ctx);
@@ -431,7 +431,7 @@ test("measures a real request end to end from transport diagnostics", async () =
 		assert.equal(measured.status, "complete");
 		assert.equal(measured.attempts, 1);
 		assert.equal(measured.outputTokens, 40);
-		assert.equal(measured.compressed, false, "gzip is off for this provider");
+		assert.equal(measured.compressed, false, "compression is off for this provider");
 
 		assert.ok(measured.sendMs !== null && measured.sendMs >= 0, "upload completion was observed");
 		assert.ok(measured.sendMs < plan.thinkMs, `a 50 KB upload finishes before the server answers (got ${measured.sendMs}ms)`);
