@@ -85,8 +85,6 @@ test("only shape rejections are worth resending", () => {
 	assert.equal(isShapeRejection(200), false);
 });
 
-
-
 test("reads the conversation from whichever field carries it", () => {
 	// Chat-completions and Anthropic bodies use `messages`; Responses-shaped ones
 	// use `input`. Both are append-only arrays, so both can share a prefix.

@@ -1,7 +1,7 @@
 /**
  * Unit tests for the three-part version handling.
  *
- * Run: npm test (from the package root; the script lists every suite)version.test.mjs
+ * Run: npm test (from the package root; the script lists every suite)
  */
 
 import assert from "node:assert/strict";
