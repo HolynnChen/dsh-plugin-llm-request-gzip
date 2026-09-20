@@ -246,7 +246,7 @@ model-request-accelerator: sg request compressed 3813841 -> 1461179 bytes
 
 ## 更新
 
-插件带三段式版本号（`package.json`，当前 `1.3.1`），设置卡片里会显示它并附一个按钮。**打开卡片时会自动检查**，并把结果显示出来——五分钟内刚查过的结果会被复用而不是重复请求，而按钮始终会重新查一次。点 **检查更新** 会让 Host 去读取仓库 `main` 分支上发布的版本并比较；当远端更新时，按钮变成 **更新到 X**。
+插件带三段式版本号（`package.json`，当前 `1.3.2`），设置卡片里会显示它并附一个按钮。**打开卡片时会自动检查**，并把结果显示出来——五分钟内刚查过的结果会被复用而不是重复请求，而按钮始终会重新查一次。点 **检查更新** 会让 Host 去读取仓库 `main` 分支上发布的版本并比较；当远端更新时，按钮变成 **更新到 X**。
 
 更新动作就是在插件自己的目录里执行 fast-forward 拉取——和安装脚本做的事一样——不经 shell 且带超时。两侧只要有一侧版本号无法解析，就绝不视为「更新」，因此一个笔误不会造成降级。**更新之后，插件仍然运行旧代码，直到重启 `dsh web`**；卡片上会写明这一点。
 
@@ -268,16 +268,23 @@ npm test
   因此可以真正渲染卡片、点击它、再重新渲染：验证 bundle id 与 package name 一致、卡片注册在 settings 命名空间上且**默认折叠**、
   耗时开关写入顶层字段、以及耗时视图只在开关开启时注册——包括「首个 section 到达前不做决定」和「随开关变化增删」。
 - `test/timing.test.mjs`：用注入时钟驱动阶段运算，每个边界都精确到毫秒断言，含「某个阶段确实不存在」的情形。
+- `test/prewarm.test.mjs`：覆盖前缀扫描与字段重排，两种 body 形状都测，含必须被拒绝的那些情形。
+- `test/version.test.mjs`：覆盖三段式比较，含字符串比较会判错的情形，以及绝不能被当作「有更新」的情形。
 
 ## 结构
 
 | 文件 | 作用 |
 | --- | --- |
 | `install.sh` | 一行命令安装器：克隆到 profile 并注册到 `cordis.patch.yml` |
-| `lib/compress.js` | gzip 决策核心：策略编译、endpoint 索引、归属解析、gzip 计划、header 改写。不依赖 Cordis / 全局对象 / zlib，可直接单测 |
-| `lib/timing.js` | 耗时状态机：阶段边界、吞吐、每会话环形缓冲、脱敏的线上投影。对注入时钟是纯函数 |
+| `lib/compress.js` | 压缩决策核心：策略编译、endpoint 索引、归属解析、编码方案、header 改写。不依赖 Cordis / 全局对象 / zlib，可直接单测 |
+| `lib/timing.js` | 耗时状态机：阶段边界、吞吐、每会话环形缓冲，以及页面渲染所用的汇总。对注入时钟是纯函数 |
 | `lib/index.js` | Host half：settings 段、`llm/stream` 归属、耗时测量及其鉴权 `/api` 路由、`globalThis.fetch` 补丁与还原 |
 | `lib/client.js` | 浏览器 half：设置卡片与请求耗时视图。CJS factory 合约，纯 JS，无 JSX / ESM |
+| `lib/prewarm.js` | 预传输核心：共享前缀扫描、字段重排、body 形状校验。纯函数，可直接单测 |
+| `lib/ledger.js` | 按会话持久化的存储，建立在部署自身的 storage domain 之上 |
+| `lib/version.js` | 三段式版本号解析与比较，供更新按钮使用 |
+| `scripts/probe-encodings.mjs` | 在还没有流量可依据之前，问清某个 endpoint 接受哪些请求编码 |
+| `README.md` | 英文文档 |
 
 ## 许可
 
