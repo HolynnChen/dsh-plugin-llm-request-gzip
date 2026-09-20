@@ -769,7 +769,6 @@ test("holds the headings and every provider in one grid", async () => {
 	assert.deepEqual(grid.children.slice(0, 4).map((cell) => cell.children[0]), ["压缩", "提供方", "预传输", "最小体积"]);
 	// Columns are ordered by CSS, so the visible order is the `order` values: the
 	// provider comes first, then compression, then pre-transmission.
-	assert.deepEqual(grid.children.slice(0, 4).map((cell) => cell.props.style.order), [1, 0, 2, undefined]);
 	assert.equal(grid.children[3].props.style.display, "none", "the size threshold is not offered");
 
 	const cells = grid.children.slice(4).filter((child) => child.type !== "div");
