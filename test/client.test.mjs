@@ -12,7 +12,7 @@
  * The React stub tracks hooks, so a component can be rendered, clicked and
  * re-rendered without a reconciler.
  *
- * Run: node --test test/
+ * Run: npm test (from the package root; the script lists every suite)
  */
 
 import assert from "node:assert/strict";

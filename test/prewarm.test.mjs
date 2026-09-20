@@ -1,7 +1,7 @@
 /**
  * Unit tests for the pre-transmission helpers.
  *
- * Run: node --test test/
+ * Run: npm test (from the package root; the script lists every suite)
  */
 
 import assert from "node:assert/strict";

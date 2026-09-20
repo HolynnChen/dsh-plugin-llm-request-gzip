@@ -4,7 +4,7 @@
  * The store takes injected clocks, so every phase boundary is asserted at an
  * exact millisecond instead of a tolerance.
  *
- * Run: node --test test/
+ * Run: npm test (from the package root; the script lists every suite)
  */
 
 import assert from "node:assert/strict";
