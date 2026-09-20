@@ -766,15 +766,17 @@ test("holds the headings and every provider in one grid", async () => {
 	// change without the test losing the grid it is about.
 	const grid = collect(body, (node) => Array.isArray(node.children) && node.children.some((child) => child?.props?.key === "h-name"))[0];
 	assert.ok(grid !== undefined, "headings and rows share one grid");
-	assert.deepEqual(grid.children.slice(0, 4).map((cell) => cell.children[0]), ["压缩", "提供方", "预传输", "最小体积"]);
-	// Columns are ordered by CSS, so the visible order is the `order` values: the
-	// provider comes first, then compression, then pre-transmission.
-	assert.equal(grid.children[3].props.style.display, "none", "the size threshold is not offered");
+	assert.deepEqual(grid.children.slice(0, 3).map((cell) => cell.children[0]), ["提供方", "压缩", "预传输"], "the provider leads, then its two switches");
+	assert.ok(String(grid.props.style.gridTemplateColumns).includes("1fr"), "and the provider column takes the slack, so the table fills the panel");
 
-	const cells = grid.children.slice(4).filter((child) => child.type !== "div");
+	// Each route contributes the same three cells, in the same order, after a group
+	// label that spans the grid (so it cannot disturb a column).
+	const cells = grid.children.slice(3).filter((child) => child.type !== "div");
 	const routes = (await ctl.read()).routes;
-	assert.equal(cells.length, routes.length * 4, "four cells per route");
-	assert.equal(cells[3].props.style.display, "none", "and each route's threshold is hidden");
+	assert.equal(cells.length, routes.length * 3, "three cells per route");
+	for (let index = 0; index < cells.length; index += 3) {
+		assert.deepEqual(cells.slice(index, index + 3).map((cell) => cell.type), ["span", "input", "input"], "identity, compress, pre-transmit");
+	}
 });
 
 test("keeps the plugin-level controls next to their labels", async () => {
