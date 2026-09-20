@@ -59,7 +59,7 @@ The conversation column's own width handles are shell chrome, rendered for which
 
 Prefill dominates a long-conversation request, and the shared prefix is the part worth not recomputing. That reuse is a **server-side** mechanism — providers hash the prompt prefix and reuse the computed KV cache — so the client's only lever is keeping the prefix byte-stable across turns, which DSH already does. The cache column is how you see whether it is working: it reports the provider's own accounting, so a high share means the prefill was largely skipped.
 
-It is worth knowing why the obvious client-side idea — opening a request with the known prefix and appending the rest once tools finish — cannot help. An OpenAI-compatible `/chat/completions` body is one JSON document: the endpoint buffers it and starts inference only once the body is complete, so a prefix alone starts no work, and a dispatched request cannot be appended to. The speculative request would either be abandoned (having done nothing) or held open until it times out. Let the server do it, and keep the prefix stable.
+**Prefix reuse is not the same as pre-transmission.** The reuse above is the provider's own KV cache. Sending the prefix early is a different lever, and it does help — just not by starting inference sooner. A `/chat/completions` body is one JSON document and no relay begins inference before it is complete, but a relay's *other* per-request work is proportional to the bytes it has received — token counting, quota pre-checks, body logging, WAF scanning — and that work can dominate TTFT once a context reaches hundreds of KB. A request whose history is already on the wire when the increment is appended therefore finishes that work sooner, and what it has to append is a few hundred bytes rather than megabytes. See **Pre-transmission** below for how it is held and what it requires of the endpoint.
 
 ### Why this differs from the Trajectory's TTFT
 
@@ -67,11 +67,11 @@ The Trajectory's own timing panel measures TTFT from the **start of the step** (
 
 ### How it measures, and why nothing is guessed
 
-`send` comes from undici's own `undici:request:bodySent` diagnostic — the moment the transport finished writing the body — and `server` from `undici:request:headers`. Response bytes come from `undici:request:bodyChunkReceived`, which reports **wire** bytes. All three are consumed through `node:diagnostics_channel`, so **the request is never modified to measure it**: the body keeps its `content-length` and no chunked encoding is introduced.
+`send` comes from undici's own `undici:request:bodySent` diagnostic — the moment the transport finished writing the body — and `server` from `undici:request:headers`. Response bytes come from `undici:request:bodyChunkReceived`, which reports **wire** bytes. All three are consumed through `node:diagnostics_channel`, so **measuring never modifies the request**: the timing view alone leaves the body with its `content-length`. Compression and pre-transmission do rewrite the request, deliberately and visibly in the panel — the first compresses the body, the second sends it in two parts, which is why a pre-transmitted request carries a chunked body and its row says so.
 
 Those channels are process-wide, and the ones on the response side are also **socket-scoped**: on a pooled keep-alive connection they run inside the async context of whichever request first opened that socket. Reading the ambient context there attributes `headers` to an older, already-finished request — which is exactly why a naive implementation reports the server phase for the first request on a connection and `null` for every one after it. This plugin pairs each measurement with the undici request object at `undici:request:create` (which still runs in the caller's context) and looks every later diagnostic up by that identity, so pooled requests keep their phases. `test/host.test.mjs` asserts this on four sequential requests over one connection and fails if the pairing is reverted.
 
-Measurements are held in memory on the Host (last 100 per session, last 40 sessions) and served to the page over the product's own authenticated `/api` route. They are not persisted, so they do not survive a DSH restart.
+Measurements are held in memory on the Host (last 100 per session, last 40 sessions) and served to the page over the product's own authenticated `/api` route. They are also **persisted per session**, one document per conversation in the deployment's storage backend, so reopening a session — or restarting DSH — shows its history rather than an empty panel. A profile without a storage backend keeps them in memory only.
 
 ## Requirements
 
@@ -103,7 +103,7 @@ git clone https://github.com/HolynnChen/dsh-plugin-model-request-accelerator.git
   "${DSH_HOME:-$HOME/.dsh}/profiles/web/plugins/model-request-accelerator"
 ```
 
-No install step is needed for dependency resolution: Node walks up from the plugin directory into the profile's own hoisted `node_modules`, where `@deepseek-ai/schemastery` already lives. If that does not hold for your layout, run `npm install --omit=dev` inside the cloned directory.
+No install step is needed for dependency resolution: Node walks up from the plugin directory into the profile's own hoisted `node_modules`, where DSH's own packages (`@deepseek-ai/schemastery`, `zod`, `@deepseek-ai/dsh-storage-domain`) already live. If that does not hold for your layout, run `npm install --omit=dev` inside the cloned directory.
 
 #### 2. Register it in the profile's patch layer
 
@@ -123,7 +123,7 @@ The `name` resolves relative to the profile directory, so a relative path keeps 
 
 The `web` profile sets `patchReload: live`, so DSH watches `cordis.patch.yml` and re-composes the tree without a restart. **Reload the browser tab** — the client module graph is injected at page load, so an already-open page will not have the card.
 
-Then open **Settings → Plugins → Configuration** and look for **Model request gzip**.
+Then open **Settings → Plugins → Configuration** and look for **模型请求加速**.
 
 > **Updating an installed copy.** `patchReload: live` watches `cordis.patch.yml`, *not* plugin sources, so an edited Host half is only picked up by restarting `dsh web`. The browser bundle is different: it is re-read from disk, so a page reload is enough for the client half. Do both when in doubt.
 
