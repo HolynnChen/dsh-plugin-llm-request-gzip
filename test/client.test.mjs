@@ -345,8 +345,8 @@ test("joins the provider directory with the stored policy and both profile shape
 	assert.equal(snapshot.revision, 7);
 	assert.equal(snapshot.prewarmPoolSize, 3, "the pool size is read for the panel");
 	assert.deepEqual(snapshot.routes, [
-		{ id: "alpha", name: "Alpha", endpoint: SITE, enabled: false, minBytes: 1024, prewarm: false },
-		{ id: "beta", name: "Beta", endpoint: SITE, enabled: true, minBytes: 4096, prewarm: true }
+		{ id: "alpha", name: "Alpha", endpoint: SITE, enabled: false, minBytes: 1024, prewarm: false, encoding: "auto" },
+		{ id: "beta", name: "Beta", endpoint: SITE, enabled: true, minBytes: 4096, prewarm: true, encoding: "auto" }
 	]);
 });
 
@@ -765,16 +765,16 @@ test("holds the headings and every provider in one grid", async () => {
 	// change without the test losing the grid it is about.
 	const grid = collect(body, (node) => Array.isArray(node.children) && node.children.some((child) => child?.props?.key === "h-name"))[0];
 	assert.ok(grid !== undefined, "headings and rows share one grid");
-	assert.deepEqual(grid.children.slice(0, 3).map((cell) => cell.children[0]), ["提供方", "压缩", "预传输"], "the provider leads, then its two switches");
+	assert.deepEqual(grid.children.slice(0, 4).map((cell) => cell.children[0]), ["提供方", "算法", "压缩", "预传输"], "the provider leads, then its algorithm and its two switches");
 	assert.ok(String(grid.props.style.gridTemplateColumns).includes("1fr"), "and the provider column takes the slack, so the table fills the panel");
 
 	// Each route contributes the same three cells, in the same order, after a group
 	// label that spans the grid (so it cannot disturb a column).
-	const cells = grid.children.slice(3).filter((child) => child.type !== "div");
+	const cells = grid.children.slice(4).filter((child) => child.type !== "div");
 	const routes = (await ctl.read()).routes;
-	assert.equal(cells.length, routes.length * 3, "three cells per route");
-	for (let index = 0; index < cells.length; index += 3) {
-		assert.deepEqual(cells.slice(index, index + 3).map((cell) => cell.type), ["span", "input", "input"], "identity, compress, pre-transmit");
+	assert.equal(cells.length, routes.length * 4, `four cells per route, grid held: ${JSON.stringify(grid.children.map((child) => child.props?.key ?? child.type))}`);
+	for (let index = 0; index < cells.length; index += 4) {
+		assert.deepEqual(cells.slice(index, index + 4).map((cell) => cell.type), ["span", "select", "input", "input"], "identity, algorithm, compress, pre-transmit");
 	}
 });
 
@@ -898,7 +898,7 @@ test("keeps the plugin-level controls next to their labels", async () => {
 	assert.ok(line.children.some((child) => child !== null && typeof child === "object" && child.children?.[0] === "预传输池大小"), "and the label is right beside it");
 });
 
-test("offers the request-body algorithm and writes it as a top-level field", async () => {
+test("offers the algorithm per provider, and writes it to that route", async () => {
 	const { exports } = loadBundle();
 	const harness = createClientContext();
 	exports.apply(harness.ctx);
@@ -924,10 +924,15 @@ test("offers the request-body algorithm and writes it as a top-level field", asy
 		if (node.type === "select") return node;
 		return find(node.children);
 	})(body);
-	assert.ok(select !== undefined, "the algorithm is offered");
+	assert.ok(select !== undefined, "the algorithm is offered for the route");
 	assert.deepEqual(select.children.map((option) => option.props.value), ["auto", "gzip"]);
-	assert.equal(select.props.value, "auto", "and reflects the stored choice");
+	assert.equal(select.props.value, "auto", "and reflects what the route resolves to");
 
-	await ctl.write("encoding", { value: "gzip" }, 7);
-	assert.deepEqual(harness.ctx.writes, [{ ns: NS, ops: [{ op: "set", path: ["encoding"], value: "gzip" }], revision: 7 }]);
+	await select.props.onChange({ target: { value: "gzip" } });
+	await flush();
+	assert.deepEqual(harness.ctx.writes, [{
+		ns: NS,
+		ops: [{ op: "set", path: ["providers", "alpha", "encoding"], value: "gzip" }],
+		revision: 7
+	}], "the choice is path-addressed to the route, not the section");
 });

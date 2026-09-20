@@ -1063,6 +1063,28 @@ test("never tries brotli when gzip is chosen", async () => {
 	}
 });
 
+test("honours an algorithm chosen per provider, not only section-wide", async () => {
+	// The point of a per-provider algorithm: two routes behind one gateway can differ.
+	const harness = createHarness({
+		encoding: "auto",
+		providers: { alpha: { enabled: true, encoding: "gzip" }, beta: { enabled: true, encoding: "auto" } }
+	});
+	const transport = spyFetch();
+	try {
+		apply(harness.ctx);
+		const alpha = chatRequest(SHARED_ENDPOINT);
+		await streamWithFetch(harness.listeners, "alpha", () => globalThis.fetch(alpha.input, alpha.init));
+		const beta = chatRequest(SHARED_ENDPOINT);
+		await streamWithFetch(harness.listeners, "beta", () => globalThis.fetch(beta.input, beta.init));
+
+		assert.equal(bodyOf(transport.calls[0]).encoding, "gzip", "the route that asked for gzip gets gzip");
+		assert.equal(bodyOf(transport.calls[1]).encoding, "br", "and its neighbour on the same endpoint still gets brotli");
+	} finally {
+		transport.restore();
+		harness.disposeAll();
+	}
+});
+
 test("retries as gzip when an endpoint refuses brotli, then remembers it", async () => {
 	const harness = createHarness({ providers: { beta: { enabled: true } } });
 	const transport = spyFetch({ refuseBr: true });

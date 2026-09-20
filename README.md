@@ -159,7 +159,7 @@ model-request-accelerator:
   timing: true
 ```
 
-`encoding` is `auto` (prefer **brotli**) or `gzip`, settable section-wide or per provider.
+`encoding` is `auto` (prefer **brotli**) or `gzip`, settable per provider or section-wide. In the card the choice is **per route**, in the table's 算法 column; the section value is what a route inherits until it sets its own.
 
 ### Pre-transmission (opt-in, per provider)
 
@@ -268,7 +268,7 @@ Release notes live in [CHANGELOG.md](./CHANGELOG.md).
 
 ## Updating
 
-The plugin carries a three-part version (`package.json`, currently `1.5.0`), and the settings card shows it with a button. **Opening the card checks by itself** and says so — a check that ran in the last five minutes is reused rather than repeated, and the button always asks afresh. **检查更新** asks the Host for the version published on the repository's `main` branch and compares the two; when the published one is newer the button becomes **更新到 X**.
+The plugin carries a three-part version (`package.json`, currently `1.6.0`), and the settings card shows it with a button. **Opening the card checks by itself** and says so — a check that ran in the last five minutes is reused rather than repeated, and the button always asks afresh. **检查更新** asks the Host for the version published on the repository's `main` branch and compares the two; when the published one is newer the button becomes **更新到 X**.
 
 The update itself is a fast-forward pull in the plugin's own directory — exactly what the installer does — run without a shell and with a timeout. A version that cannot be parsed on either side is never treated as newer, so a typo cannot offer a downgrade. **After an update the plugin still runs the old code until `dsh web` is restarted**; the card says so.
 

@@ -4,7 +4,18 @@ Three-part versions. The panel's **检查更新** button compares the installed
 `package.json` with the one on `main`, so an entry here is worth a release only when
 something a user can see has changed.
 
-## 1.5.1
+## 1.6.0
+
+- **The compression algorithm is chosen per provider, in the settings table**, instead
+  of once for the whole plugin. Two routes behind one gateway can now differ — one
+  pinned to gzip because that relay is known to dislike brotli, the other left on
+  `auto`. The section-wide `encoding` remains as the default a route inherits until it
+  sets its own, so existing `settings.yaml` files keep working unchanged.
+- The Host already compiled a per-provider `encoding`; only the card did not offer it,
+  which is why this is a UI change with a test that proves the two routes really do go
+  out differently.
+
+
 
 - The ledger row also reports **how many pre-transmitted requests the plugin is
   holding right now**. Those are the connections this plugin owns; anything beyond
