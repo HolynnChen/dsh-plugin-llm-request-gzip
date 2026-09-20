@@ -140,7 +140,7 @@ The card lives in **Settings → Plugins → Configuration**, collapsed like eve
 - **Minimum body size (bytes)** — default `1024`. Smaller requests are sent as-is, and compression is skipped whenever it would not actually make the body smaller.
 - **Algorithm** — **brotli at quality 9** by default, measured at roughly 5–15% smaller than gzip for a comparable amount of time. Brotli's own default is quality 11, which is deliberately not used: it costs about a second of *synchronous* CPU per megabyte, blocking the event loop, for only a few percent more. A request body has no negotiation, so if an endpoint answers a shape rejection (411/415/501) to a brotli body the request is retried as gzip — the adapter never sees a failure it would not have seen uncompressed — and that endpoint is remembered, so brotli is attempted there exactly once. Choose `gzip` to never attempt it.
 
-Each route's endpoint is shown next to it. Routes that share one endpoint are grouped, because that endpoint's traffic is compressed as soon as any one of them is enabled.
+Each route's endpoint is shown next to it. Routes that share one endpoint are grouped, but **each one is configured independently**: the plugin attributes every model call to the provider that issued it, and that provider's own switches decide. The endpoint only decides when a request cannot be attributed at all, which is the case the grouping note warns about.
 
 Settings persist under the `model-request-accelerator` key of `settings.yaml`:
 
