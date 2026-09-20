@@ -959,10 +959,10 @@ test("keeps the pool across a turn boundary", async () => {
 		await new Promise((resolve) => setTimeout(resolve, 40));
 		assert.equal(held().length, 2, "and it survives the turn boundary with nothing queued either");
 
-		// The queued turn repeats this history, so the pool serves it.
+		// The next turn repeats this history, so the pool serves it.
 		await runStep(harness, base, "s1", [{ role: "user", content: "hi" }, { role: "assistant", content: "hello" }, { role: "user", content: "next" }], "stop");
 		const measurements = await readLedger(harness, "s1");
-		assert.notEqual(measurements[1].prewarm, null, "the queued turn reused the pool");
+		assert.notEqual(measurements[1].prewarm, null, "the next turn reused the pool");
 	} finally {
 		harness.disposeAll();
 		close();
@@ -999,7 +999,6 @@ test("keeps a separate pool for every agent, even with identical histories", asy
 		close();
 	}
 });
-
 
 test("does not give up on an endpoint for one transient failure", async () => {
 	// The held request — the second one — answers 503. A transient failure must
@@ -1105,7 +1104,7 @@ test("keeps brotli off its slow quality curve, and counts that time as preparati
 		assert.equal(measurement.encoding, "br", "brotli is the algorithm in use");
 		assert.ok(measurement.sentBytes < measurement.requestBytes, "and it compressed the body");
 		assert.ok(measurement.prepareMs > 0, "the compression happens inside the preparation phase");
-		assert.ok(measurement.prepareMs < 400, `preparation took ${measurement.prepareMs}ms, so the quality is not capped`);
+		assert.ok(measurement.prepareMs < 400, `preparation took ${measurement.prepareMs}ms, so quality 11 is not in use`);
 	} finally {
 		transport.restore();
 		harness.disposeAll();
