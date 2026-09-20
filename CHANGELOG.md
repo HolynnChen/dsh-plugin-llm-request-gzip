@@ -4,7 +4,18 @@ Three-part versions. The panel's **检查更新** button compares the installed
 `package.json` with the one on `main`, so an entry here is worth a release only when
 something a user can see has changed.
 
-## 1.6.0
+## 1.6.1
+
+- **The installer no longer produces an unparseable patch layer from a pristine
+  profile.** A fresh `cordis.patch.yml` is comments followed by an empty array, and
+  appending the loader entry after `[]` makes a document YAML rejects — it reads one
+  document that is both an empty array and a block sequence, so the profile fails to
+  compose. The installer now removes the empty array and puts the entry in its place,
+  keeping the comments.
+- `test/install.test.mjs` runs the installer twice against throwaway profiles from
+  four starting states, which is what the fix is verified by.
+
+
 
 - **The compression algorithm is chosen per provider, in the settings table**, instead
   of once for the whole plugin. Two routes behind one gateway can now differ — one

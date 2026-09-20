@@ -87,7 +87,7 @@ curl -fsSL https://raw.githubusercontent.com/HolynnChen/dsh-plugin-model-request
 ```
 
 It clones the plugin into `$DSH_HOME/profiles/web/plugins/model-request-accelerator` and appends its loader entry to
-`cordis.patch.yml`, leaving an already-registered entry alone — safe to re-run. Target another profile with
+`cordis.patch.yml`, leaving an already-registered entry alone, and replacing the empty array a pristine patch layer still consists of — appending after `[]` would produce a file YAML rejects. Safe to re-run. Target another profile with
 `DSH_HOME=... DSH_PROFILE=... sh`.
 
 Then **reload the browser tab** and open **Settings → Plugins → Configuration**.
@@ -227,6 +227,7 @@ npm test
 - `test/timing.test.mjs` drives the phase arithmetic with injected clocks, so every boundary is asserted at an exact millisecond, including the cases where a phase is genuinely absent.
 - `test/prewarm.test.mjs` covers the prefix scanner and the field reordering against bodies of both shapes, including the ones that must be refused.
 - `test/version.test.mjs` covers three-part comparison, including the cases a string comparison gets wrong and the ones that must not be read as an update.
+- `test/install.test.mjs` runs the installer against throwaway profiles, twice each, from a pristine patch layer, one that already has entries, an empty file and no file at all — pinning the case where an empty array must be replaced rather than appended to.
 
 ## Layout
 
@@ -268,7 +269,7 @@ Release notes live in [CHANGELOG.md](./CHANGELOG.md).
 
 ## Updating
 
-The plugin carries a three-part version (`package.json`, currently `1.6.0`), and the settings card shows it with a button. **Opening the card checks by itself** and says so — a check that ran in the last five minutes is reused rather than repeated, and the button always asks afresh. **检查更新** asks the Host for the version published on the repository's `main` branch and compares the two; when the published one is newer the button becomes **更新到 X**.
+The plugin carries a three-part version (`package.json`, currently `1.6.1`), and the settings card shows it with a button. **Opening the card checks by itself** and says so — a check that ran in the last five minutes is reused rather than repeated, and the button always asks afresh. **检查更新** asks the Host for the version published on the repository's `main` branch and compares the two; when the published one is newer the button becomes **更新到 X**.
 
 The update itself is a fast-forward pull in the plugin's own directory — exactly what the installer does — run without a shell and with a timeout. A version that cannot be parsed on either side is never treated as newer, so a typo cannot offer a downgrade. **After an update the plugin still runs the old code until `dsh web` is restarted**; the card says so.
 

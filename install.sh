@@ -49,6 +49,15 @@ fi
 if grep -qE "^[[:space:]]*-[[:space:]]*id:[[:space:]]*${PLUGIN_ID}[[:space:]]*\$" "$PATCH_FILE" 2>/dev/null; then
 	say "==> $PATCH_FILE already registers $PLUGIN_ID; leaving it as is"
 else
+	# A pristine patch layer is comments followed by an empty array. Appending a
+	# sequence entry after `[]` produces a file a YAML parser rejects — it reads one
+	# document that is both an empty array and a block sequence — so the empty array
+	# is removed first and the entry takes its place. Comments are left alone.
+	if [ "$(sed 's/#.*$//' "$PATCH_FILE" | sed 's/^---//' | tr -d '[:space:]')" = "[]" ]; then
+		say "==> $PATCH_FILE is still an empty array; replacing it with the entry"
+		grep -vE '^[[:space:]]*\[\][[:space:]]*$' "$PATCH_FILE" >"$PATCH_FILE.tmp" || true
+		mv "$PATCH_FILE.tmp" "$PATCH_FILE"
+	fi
 	say "==> registering $PLUGIN_ID in $PATCH_FILE"
 	{
 		printf '\n'
