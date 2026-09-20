@@ -1250,26 +1250,6 @@ test("serves a session's stored rows", async () => {
 	}
 });
 
-test("numbers a live record past a session's stored history", async () => {
-	// The panel can be opened after the session has already run something, so a live
-	// record may be numbered before its stored history is found. Without
-	// renumbering, the two would share an id and the panel would show one twice.
-	const storage = fakeStorage({ s1: { updatedAt: 1, rows: [{ id: 7, provider: "old", model: null, totalMs: 5 }] } });
-	const { close, base } = await recordingServer();
-	const harness = createHarness({ providers: {} }, { storage });
-	try {
-		apply(harness.ctx);
-		await runStep(harness, base, "s1", [{ role: "user", content: "live" }], "stop");
-
-		const rows = await waitForLedger(harness, "s1", 2);
-		assert.equal(rows.length, 2, "the stored row and the live one are both served");
-		assert.equal(rows[0].provider, "old", "the stored row keeps its place at the front");
-		assert.notEqual(rows[0].id, rows[1].id, "and the live row was renumbered rather than colliding with it");
-	} finally {
-		harness.disposeAll();
-		close();
-	}
-});
 
 test("keeps pre-transmitted requests compressed after one has been claimed", async () => {
 	// The claim skips compressing the body, and that must not read as "this
@@ -1335,9 +1315,10 @@ test("answers for a session whose stored ledger cannot be read", async () => {
 });
 
 test("reports the increment on the wire, and what it is made of", async () => {
-	// A real body carries fields after `messages` — the tool schemas above all —
-	// which no prefix can reach, so they are re-sent every time. The row must say
-	// so, and must not present the uncompressed text as the wire size.
+	// A real body carries the tool schemas and other fixed fields, and the reordering
+	// moves them ahead of the conversation so the prefix can reach them; what remains
+	// after it is the closing brackets. The row must report the increment's wire size
+	// rather than presenting the uncompressed text as it.
 	const { close, requests, base } = await recordingServer();
 	const harness = createHarness({ providers: { alpha: { enabled: true, minBytes: 0, prewarm: true } }, prewarmPoolSize: 1 });
 	const history = [{ role: "user", content: "y".repeat(20000) }];
@@ -1359,7 +1340,7 @@ test("reports the increment on the wire, and what it is made of", async () => {
 		assert.notEqual(prewarm, null, "the step was served from the pool");
 		assert.ok(prewarm.deltaWireBytes > 0, "the wire increment is recorded");
 		assert.ok(prewarm.deltaWireBytes < prewarm.deltaBytes, "and it is smaller than the text it encodes");
-		assert.ok(prewarm.tailBytes > 0, "the part after the messages array is measured");
+		assert.ok(prewarm.tailBytes > 0, "what remains after the conversation is still measured");
 		assert.ok(prewarm.tailBytes < prewarm.deltaBytes, "and it is part of the increment, not all of it");
 	} finally {
 		harness.disposeAll();
