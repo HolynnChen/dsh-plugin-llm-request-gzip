@@ -60,7 +60,7 @@ DSH 的两个 adapter（`dsh-llm-deepseek`、`dsh-llm-pi-ai`）都直接调用�
 
 长对话请求里 prefill 占大头，而其中真正值得省的是共享前缀。这种复用是**服务端**机制——提供方对提示词前缀做哈希并复用已算好的 KV 缓存——所以客户端唯一能做的杠杆就是让前缀逐轮保持字节级稳定，而 DSH 已经做到了。「缓存」这一列就是用来看它有没有生效：它读的是提供方自己的账，比例高就说明 prefill 基本被跳过了。
 
-也值得知道为什么那个看起来很自然的客户端思路——先用已知前缀开一个请求、等工具跑完再把剩下的接上去——帮不上忙：OpenAI 兼容的 `/chat/completions` 请求体是**一个 JSON 文档**，端点在请求体完整之前只会缓冲、不会开始推理，所以只发前缀不会启动任何计算，而且已发出的请求也无法追加。那个投机请求要么被丢弃（什么都没做），要么一直挂着直到超时。这件事交给服务端做，客户端把前缀保持稳定即可。
+**前缀复用与预传输不是一回事。** 上文的复用是提供方自己的 KV 缓存；而提前把前缀送出去是另一个杠杆 ✓，它确实有用 ✓ —— 只不过不会让推理更早开始 ✓。`/chat/completions` 的请求体是**一个 JSON 文档**，没有任何中转站会在它完整之前开始推理；但中转站**其它**逐请求工作与它已经收到的字节数成正比 ✓ —— token 计数、配额预检、body 日志、WAF 扫描 ✓ —— 上下文达到几百 KB 之后，这项工作足以主导 TTFT ✓。因此，当增量被追加时历史已经在链路上的请求，会更早做完这些工作 ✓，而它需要追加的只有几百字节，而不是数 MB ✓。具体如何挂起、以及对 endpoint 有什么要求，见下文的**预传输**一节 ✓。
 
 ### 为什么和「轨迹」里的 TTFT 不一样
 
@@ -70,14 +70,14 @@ DSH 的两个 adapter（`dsh-llm-deepseek`、`dsh-llm-pi-ai`）都直接调用�
 ### 怎么测的，以及为什么没有估算
 
 「发送」取自 undici 自己的 `undici:request:bodySent` 诊断——传输层写完请求体的那一刻；「服务端」取自 `undici:request:headers`；响应字节数取自 `undici:request:bodyChunkReceived`，它是**线路字节**。
-三者都通过 `node:diagnostics_channel` 消费，因此**测量本身完全不改动请求**：请求体保留 `content-length`，也不会被改成 chunked 编码。
+三者都通过 `node:diagnostics_channel` 消费，因此**测量本身完全不改动请求**：只开启耗时视图时，请求体保留 `content-length` ✓。而**压缩与预传输确实会改写请求** ✓ —— 前者压缩 body ✓，后者把 body 分两段发送 ✓（这正是预传输的请求带 chunked body 的原因 ✓，面板上也会标明 ✓）。
 
 这些 channel 是进程级的，而且响应侧那几个还是**按 socket 归属的**：在 keep-alive 复用连接上，它们会运行在最早打开该 socket 的那个请求的异步上下文里。
 在那里读环境上下文，会把 `headers` 归属到一个更早、已经结束的请求上——这正是「朴素实现只在每条连接的第一个请求上报服务端耗时、之后全是 null」的原因。
 本插件在 `undici:request:create`（它仍在调用方上下文里）把测量与 undici 的 request 对象配对，之后的诊断一律按该对象身份查找，因此复用连接的请求不会丢阶段。
 `test/host.test.mjs` 会在同一条连接上连续发 4 个请求来断言这一点，一旦把配对改回按上下文归属，该测试就会失败。
 
-测量数据保存在 Host 内存中（每会话最近 100 条、最近 40 个会话），通过产品自身的 `/api` 鉴权路由提供给页面。它不持久化，因此 DSH 重启后不再保留。
+测量数据保存在 Host 内存中（每会话最近 100 条、最近 40 个会话），通过产品自身的 `/api` 鉴权路由提供给页面。它同时**按会话持久化** ✓ —— 每个会话一个文档，存在部署自身的存储后端里 ✓ —— 因此重新打开会话、或重启 DSH，看到的都是历史而不是空面板 ✓。若某个 profile 没有存储后端，则只保留在内存中 ✓。
 
 ## 环境要求
 
@@ -109,7 +109,7 @@ git clone https://github.com/HolynnChen/dsh-plugin-model-request-accelerator.git
 ```
 
 依赖解析无需额外安装步骤：Node 会从插件目录逐级向上查找，命中 profile 自己已 hoist 的 `node_modules`，
-`@deepseek-ai/schemastery` 就在那里。若你的目录结构不符合，在克隆目录内执行 `npm install --omit=dev` 即可。
+DSH 自己的那些包（`@deepseek-ai/schemastery`、`zod`、`@deepseek-ai/dsh-storage-domain`）就在那里。若你的目录结构不符合，在克隆目录内执行 `npm install --omit=dev` 即可。
 
 #### 2. 在 profile 的 patch 层注册
 
@@ -131,7 +131,7 @@ git clone https://github.com/HolynnChen/dsh-plugin-model-request-accelerator.git
 `web` profile 的 `patchReload` 为 `live`，DSH 会监听 `cordis.patch.yml` 并实时重排组合，**不需要重启**。
 但必须**刷新浏览器页面**——客户端模块图是在页面加载时注入的，已打开的页面拿不到新的 bundle。
 
-然后打开 **设置 → 插件 → 配置**，找到 **模型请求 gzip 压缩**。
+然后打开 **设置 → 插件 → 配置**，找到 **模型请求加速**。
 
 > **更新已安装的副本。** `patchReload: live` 监听的是 `cordis.patch.yml`，**不监听插件源码**，所以改过的 Host 半边必须重启 `dsh web` 才会生效。
 > 浏览器 bundle 不同：它会被重新从磁盘读取，因此客户端半边只要刷新页面即可。拿不准时两个都做。
