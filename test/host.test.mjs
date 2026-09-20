@@ -321,7 +321,10 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * first token, then decode time across the remaining chunks.
  */
 async function sseServer(plan) {
+	/** What each request carried, for tests that assert on the upload. */
+	const seen = [];
 	const server = http.createServer(async (req, res) => {
+		seen.push({ url: req.url, encoding: req.headers["content-encoding"] });
 		await new Promise((resolve) => {
 			req.on("data", () => {});
 			req.on("end", resolve);
@@ -340,7 +343,7 @@ async function sseServer(plan) {
 		res.end();
 	});
 	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-	return { server, base: `http://127.0.0.1:${server.address().port}/v1` };
+	return { server, base: `http://127.0.0.1:${server.address().port}/v1`, seen };
 }
 
 /** A body the test already serialized itself, sent verbatim. */
@@ -468,7 +471,7 @@ test("records the compression actually applied to a measured request", async () 
 		const [measured] = payload.measurements;
 		assert.equal(measured.compressed, true, "the rewrite is reported as compression");
 		assert.ok(measured.sentBytes < measured.requestBytes, "the sent size is smaller than the serialized size");
-		assert.ok(measured.sendMs !== null, "timing still works alongside the gzip rewrite");
+		assert.ok(measured.sendMs !== null, "timing still works alongside the compression rewrite");
 	} finally {
 		server.close();
 		harness.disposeAll();
@@ -477,9 +480,9 @@ test("records the compression actually applied to a measured request", async () 
 
 //#endregion
 
-test("records nothing while the timing preference is off, but still applies gzip", async () => {
+test("records nothing while the timing preference is off, but still compresses", async () => {
 	const plan = { thinkMs: 10, firstTokenMs: 10, decodeMs: 20, chunks: 2, outputTokens: 5 };
-	const { server, base } = await sseServer(plan);
+	const { server, base, seen } = await sseServer(plan);
 	const harness = createHarness({ providers: { alpha: { enabled: true, minBytes: 0 } }, timing: false });
 	try {
 		apply(harness.ctx);
@@ -492,6 +495,9 @@ test("records nothing while the timing preference is off, but still applies gzip
 		const route = harness.routes.find((candidate) => candidate.path === "/api/model-request-accelerator/timings");
 		const payload = await (await route.fetch(new Request("http://localhost/api/model-request-accelerator/timings?sessionId=s1"))).json();
 		assert.deepEqual(payload.measurements, [], "a switched-off ledger stores nothing");
+		// The two features are independent: hiding the view must not turn the
+		// rewrite off.
+		assert.equal(seen[0].encoding, "br", "the request was still compressed");
 	} finally {
 		server.close();
 		harness.disposeAll();
