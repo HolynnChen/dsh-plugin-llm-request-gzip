@@ -182,6 +182,8 @@ Rows that used it carry a **预热** chip; hover it for the pre-sent bytes, the 
 
 gzip and pre-transmission compose: the split keeps **one** deflate stream open across every part, so the parts decompress as a single body and the compression is kept rather than traded away.
 
+The held requests are closed by themselves, in every case. A consumed member is finished by writing its increment and closing the body (`stream.close()`), after which undici returns the socket to its keep-alive pool rather than closing it — the same connection then serves later requests. An abandoned member is aborted by whichever path abandoned it: the hold timer, a mismatch, a refused body, the pool being released, or the plugin unloading. Nothing has to be closed by hand, and nothing lingers past `prewarmHoldMs` of idleness.
+
 ### Safety notes
 
 - Every provider is **off by default**.
