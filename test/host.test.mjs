@@ -884,6 +884,8 @@ function fakeStorage(seed = {}) {
 								table.set(key, value);
 							},
 							delete: async (key) => table.delete(key),
+							entries: () => table.entries(),
+							keys: () => table.keys(),
 							get size() {
 								return table.size;
 							}
@@ -1234,6 +1236,35 @@ test("writes each session's ledger and loads it back", async () => {
 	} finally {
 		harness.disposeAll();
 		close();
+	}
+});
+
+test("reports the ledger's size, and clears everything on request", async () => {
+	const storage = fakeStorage({ s1: { updatedAt: 1, rows: [{ id: 1, provider: "old", model: null, totalMs: 5 }] } });
+	const harness = createHarness({ providers: {} }, { storage });
+	try {
+		apply(harness.ctx);
+		const route = harness.routes.find((candidate) => candidate.path === "/api/model-request-accelerator/ledger");
+		assert.ok(route !== undefined, "the ledger route is registered");
+
+		// The ledger opens asynchronously, so ask again until it reports itself open
+		// rather than racing the first read.
+		const readStats = async () => (await route.fetch(new Request("http://localhost/api/model-request-accelerator/ledger"))).json();
+		let stats = await readStats();
+		for (let attempt = 0; attempt < 50 && stats.durable !== true; attempt += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			stats = await readStats();
+		}
+		assert.equal(stats.durable, true, "the durable store is open");
+		assert.equal(stats.durableSessions, 1, "the stored session is counted");
+		assert.ok(stats.bytes > 0, "and its document is measured");
+
+		const cleared = await (await route.fetch(new Request("http://localhost/api/model-request-accelerator/ledger?action=clear", { method: "POST" }))).json();
+		assert.equal(cleared.durableSessions, 0, "the answer already reflects the clear");
+		assert.equal(storage.table.size, 0, "and the stored document is gone");
+		assert.equal(cleared.memorySessions, 0);
+	} finally {
+		harness.disposeAll();
 	}
 });
 

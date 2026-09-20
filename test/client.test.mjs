@@ -778,6 +778,94 @@ test("holds the headings and every provider in one grid", async () => {
 	}
 });
 
+test("shows the ledger's size, and clears it only after a confirmation", async () => {
+	const { exports } = loadBundle();
+	const harness = createClientContext();
+	exports.apply(harness.ctx);
+	const card = harness.registrationFor("settings.plugin.item");
+	const { ctl } = card.options.inject();
+
+	const calls = [];
+	const realFetch = globalThis.fetch;
+	globalThis.fetch = async (url, init) => {
+		const text = String(url);
+		const method = init?.method ?? "GET";
+		calls.push({ url: text, method });
+		if (text.includes("/ledger")) {
+			return method === "POST"
+				? Response.json({ bytes: 0, durableSessions: 0, memorySessions: 0, memoryRows: 0, durable: true })
+				: Response.json({ bytes: 480 * 1024, durableSessions: 3, memorySessions: 1, memoryRows: 40, durable: true });
+		}
+		if (text.includes("/endpoints")) return Response.json({ endpoints: {} });
+		if (text.includes("/version")) return Response.json({ version: "1.4.0", latest: "1.4.0", updateAvailable: false });
+		return Response.json({});
+	};
+	try {
+		const collapsed = mount(card.component, { ctl });
+		await flush();
+		collapsed.children[0].props.onClick();
+		const body = rerender(card.component, { ctl }).children[1];
+
+		const texts = [];
+		const buttons = [];
+		const walk = (node) => {
+			if (node === null || node === undefined || typeof node !== "object") {
+				texts.push(node);
+				return;
+			}
+			if (Array.isArray(node)) {
+				for (const child of node) walk(child);
+				return;
+			}
+			if (node.type === "button") buttons.push(node);
+			walk(node.children);
+		};
+		walk(body);
+
+		assert.ok(texts.includes("请求耗时记录"), "the ledger has a row of its own");
+		assert.ok(texts.includes("4 个会话 · 480.0KB"), `the size is shown, saw ${JSON.stringify(texts.filter((t) => typeof t === "string" && t.includes("会话")))}`);
+		assert.equal(calls.filter((call) => call.method === "POST").length, 0, "opening the card clears nothing");
+
+		// The first click only asks; nothing goes out until it is confirmed.
+		const clear = buttons.find((node) => node.children[0] === "清空");
+		assert.ok(clear !== undefined, "a clear button is offered");
+		clear.props.onClick();
+		const confirming = rerender(card.component, { ctl }).children[1];
+		const confirmButtons = [];
+		const collectButtons = (node) => {
+			if (node === null || typeof node !== "object") return;
+			if (Array.isArray(node)) {
+				for (const child of node) collectButtons(child);
+				return;
+			}
+			if (node.type === "button") confirmButtons.push(node.children[0]);
+			collectButtons(node.children);
+		};
+		collectButtons(confirming);
+		assert.ok(confirmButtons.includes("确认清空"), "the confirmation is asked for");
+		assert.equal(calls.filter((call) => call.method === "POST").length, 0, "and still nothing is cleared");
+
+		// Confirming sends the request, and the row reports the outcome.
+		const confirm = (function find(node) {
+			if (node === null || typeof node !== "object") return undefined;
+			if (Array.isArray(node)) {
+				for (const child of node) {
+					const hit = find(child);
+					if (hit !== undefined) return hit;
+				}
+				return undefined;
+			}
+			if (node.type === "button" && node.children[0] === "确认清空") return node;
+			return find(node.children);
+		})(confirming);
+		confirm.props.onClick();
+		await flush();
+		assert.deepEqual(calls.filter((call) => call.method === "POST").map((call) => call.url), ["/api/model-request-accelerator/ledger?action=clear"]);
+	} finally {
+		globalThis.fetch = realFetch;
+	}
+});
+
 test("keeps the plugin-level controls next to their labels", async () => {
 	const { exports } = loadBundle();
 	const harness = createClientContext();

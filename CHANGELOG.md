@@ -4,7 +4,17 @@ Three-part versions. The panel's **检查更新** button compares the installed
 `package.json` with the one on `main`, so an entry here is worth a release only when
 something a user can see has changed.
 
-## 1.4.0
+## 1.5.0
+
+- **The settings card shows what the timing ledger occupies** — how many sessions it
+  covers and how many bytes its stored documents make up — and offers a button to
+  clear it. Clearing asks for confirmation first, then removes the stored documents
+  (including sessions this process never loaded) and what the running process holds.
+  It cannot be undone, and the card says so.
+- The per-conversation cap on held requests now counts the pool it has just filed.
+  It ran before that write, so the total settled one pool above the bound it claims.
+
+
 
 A full read of every file, and the corrections it turned up. Most were documentation:
 sentences describing mechanisms that had been removed, or describing current behaviour

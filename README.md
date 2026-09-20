@@ -133,6 +133,7 @@ The card lives in **Settings → Plugins → Configuration**, collapsed like eve
 
 **The plugin switch**
 
+- **Timing records** — how many sessions and how many bytes the ledger holds, with a **清空** button beside it. Clearing removes both the stored documents (including sessions this process never loaded) and what the running process holds; it cannot be undone, and the row says so.
 - **Show the Request timing view** — default on. Turning it off also stops the Host recording timings, so a deployment that does not want the view pays nothing for it. The view tab appears and disappears immediately; no page reload is needed.
 
 **One row per provider route**
@@ -267,7 +268,7 @@ Release notes live in [CHANGELOG.md](./CHANGELOG.md).
 
 ## Updating
 
-The plugin carries a three-part version (`package.json`, currently `1.4.0`), and the settings card shows it with a button. **Opening the card checks by itself** and says so — a check that ran in the last five minutes is reused rather than repeated, and the button always asks afresh. **检查更新** asks the Host for the version published on the repository's `main` branch and compares the two; when the published one is newer the button becomes **更新到 X**.
+The plugin carries a three-part version (`package.json`, currently `1.5.0`), and the settings card shows it with a button. **Opening the card checks by itself** and says so — a check that ran in the last five minutes is reused rather than repeated, and the button always asks afresh. **检查更新** asks the Host for the version published on the repository's `main` branch and compares the two; when the published one is newer the button becomes **更新到 X**.
 
 The update itself is a fast-forward pull in the plugin's own directory — exactly what the installer does — run without a shell and with a timeout. A version that cannot be parsed on either side is never treated as newer, so a typo cannot offer a downgrade. **After an update the plugin still runs the old code until `dsh web` is restarted**; the card says so.
 

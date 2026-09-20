@@ -214,6 +214,23 @@ test("a stream that ends without tokens still closes", () => {
 	assert.equal(measurement.generationMs, null);
 });
 
+test("reports what it holds, and forgets all of it on clear", () => {
+	const clock = fixedClock();
+	const store = createTimingStore({ now: clock.now, wallNow: clock.wallNow });
+	const one = store.begin({ provider: "sg", sessionId: "s1" });
+	store.noteFetch(one, "https://gateway.example/v1/chat/completions", BODY_BYTES);
+	store.finish(one, clock.now());
+	store.begin({ provider: "sg", sessionId: "s2" });
+	store.seed("s3", [{ id: 9, provider: "sg", model: null, totalMs: 1 }]);
+
+	assert.deepEqual(store.stats(), { sessions: 3, rows: 3 }, "live and restored sessions both count");
+
+	store.clear();
+	assert.deepEqual(store.stats(), { sessions: 0, rows: 0 });
+	assert.deepEqual(store.snapshot("s1"), [], "cleared sessions read as empty");
+	assert.equal(store.has("s3"), false, "including the ones restored from storage");
+});
+
 test("keeps sessions apart and bounds both dimensions", () => {
 	const clock = fixedClock();
 	const store = createTimingStore({ now: clock.now, wallNow: clock.wallNow });
