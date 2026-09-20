@@ -2,23 +2,24 @@
 
 **模型请求加速 / model request accelerator** — compress model request bodies, pre-transmit the shared history, and break down where each request spends its time.
 
-为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的模型请求提供两件事：
+为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的模型请求提供三件事，均在 设置 → 插件 中按提供方配置：
 
-- **按提供方的 gzip 请求体压缩**，在 设置 → 插件 中配置。
+- **请求体压缩** —— brotli 优先、不可用时退回 gzip —— 缩小中转站在派发前必须消化的字节数。
+- **预传输** —— 在需要它的请求出现之前，就把共享历史放到链路上，因此每一步只需上传增量。
 - **请求耗时分解** —— 与「轨迹」并列的一个视图，把每次模型调用拆成各阶段，并给出每秒 token 数。
 
 > English docs: [README.md](./README.md)
 
-## gzip：它到底做什么
+## 压缩：它到底做什么
 
 这里有个容易误解的点，先看表格：
 
 | 方向 | 现状 | 本插件 |
 | --- | --- | --- |
 | 响应（下行） | Node 的 undici `fetch` **已经默认发送** `accept-encoding: gzip, deflate`，并自动解压响应 | 不做任何事——没有可开启的东西 |
-| 请求（上行） | 默认不压缩；长上下文 + base64 图片的 JSON body 原样上传 | **压缩它**，并加 `content-encoding: gzip` |
+| 请求（上行） | 默认不压缩；长上下文 + base64 图片的 JSON body 原样上传 | **压缩它**，并加 `content-encoding: br`；被拒时退回 `gzip` |
 
-实测：一个 3043 字节的 chat-completions body 压缩后为 79 字节。
+真实会话实测：3.8 MB 的请求体压缩后为 1.46 MB（38%），而认领时仍需写入的增量只有几百字节。
 
 DSH 的两个 adapter（`dsh-llm-deepseek`、`dsh-llm-pi-ai`）都直接调用全局 `fetch`，适配器 seam 没有 header 钩子，
 因此本插件在自身 fiber 生命周期内接管该 seam，并在插件停止或移除时还原原始 `fetch`。
@@ -38,15 +39,15 @@ DSH 的两个 adapter（`dsh-llm-deepseek`、`dsh-llm-pi-ai`）都直接调用�
 | 列 | 含义 |
 | --- | --- |
 | 时间 | 请求发出的时刻，精确到秒。 |
-| 提供方 / 模型 | 提供方路由、模型、用途（压缩/标题）；请求体确实被压缩时带 `gzip` 标记，运行中或失败也有标记。 |
+| 提供方 / 模型 | 提供方路由、模型、用途（压缩/标题）；请求体确实被压缩时带实际所用算法的 `br` 或 `gzip` 标记，运行中或失败也有标记。 |
 | 发送 | 请求发出 → **请求体全部发送完毕**。 |
 | 服务端 | 发送完毕 → 收到响应头。 |
 | 首token | 等到首个 token 用了多久：普通请求从**发出**算起，预热请求从**被领用**算起。服务端自身的首 token（从发送完毕起算）在行的悬停提示里。 |
 | 生成 | 首个 token → 流结束。 |
 | tok/s | 输出 token 数 ÷ 生成区间。 |
 | 缓存 | 提示词中由提供方前缀缓存直接命中的比例。`inputTokens` 只统计**未缓存**的输入，因此提示词是「缓存 + 未缓存」，比例为 缓存 ÷（缓存 + 未缓存）；悬停可看原始 token 数。 |
-| 请求体 | 被 gzip 压缩时显示 `压缩前 → 实际发送`，否则只显示序列化后的大小。 |
-| 响应体 | **线路上**实际收到的字节数，并在响应声明了 `content-encoding` 时一并标出——因此 gzip 返回会被明确标记，而不只是「看起来小」。显示 `–` 表示**一个字节都没归属到本行**，那是接线故障而不是空响应。 |
+| 请求体 | 被压缩时显示 `压缩前 → 实际发送`，否则只显示序列化后的大小。 |
+| 响应体 | **线路上**实际收到的字节数，并在响应声明了 `content-encoding` 时一并标出——因此被压缩的返回会被明确标记，而不只是「看起来小」。显示 `–` 表示**一个字节都没归属到本行**，那是接线故障而不是空响应。 |
 | 总计 | 发出请求 → 流结束。 |
 
 每个表头字段把鼠标移上去都会给出解释；把鼠标停在某一行上，还能看到塞不进表格的细节：准备耗时（流开始 → 请求发出）、输入/输出 token 数，以及响应体积及其编码。
