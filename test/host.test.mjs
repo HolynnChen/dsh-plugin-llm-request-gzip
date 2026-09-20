@@ -95,16 +95,7 @@ function createHarness(initialSection = {}, options = {}) {
 		get(name) {
 			if (name === "settings") return settings;
 			if (name === "llm") return { listConfigurableProviders: () => DIRECTORY };
-			// A live agent whose inbox reports queued work, when a test asks for one.
-			if (name === "agents") {
-				if (options.pendingInput === undefined) return undefined;
-				return {
-					get: (sessionId) => options.pendingInput === true || options.pendingInput.includes(sessionId)
-						? { inbox: { hasPending: true } }
-						: undefined
-				};
-			}
-			return undefined;
+				return undefined;
 		},
 		on(event, listener) {
 			const list = listeners.get(event) ?? [];
@@ -944,9 +935,12 @@ test("rebuilds the pool from the new prefix after a mismatch", async () => {
 	}
 });
 
-test("keeps the pool across a turn boundary while input is queued", async () => {
+test("keeps the pool across a turn boundary", async () => {
+	// It used to be kept only when the agent already had input queued, and the test
+	// said so; the pool is kept regardless now, so the queued-input scaffolding was
+	// removed with the check that read it.
 	const { close, requests, base } = await recordingServer();
-	const harness = createHarness({ providers: { alpha: { prewarm: true } }, prewarmPoolSize: 2 }, { pendingInput: true });
+	const harness = createHarness({ providers: { alpha: { prewarm: true } }, prewarmPoolSize: 2 });
 	const held = () => requests.filter((entry) => !entry.completed && !entry.aborted);
 	try {
 		apply(harness.ctx);
