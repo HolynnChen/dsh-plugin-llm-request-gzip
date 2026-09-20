@@ -10,7 +10,7 @@
  * provider routes (`alpha`, `beta`) sharing one endpoint — because that is the
  * case endpoint-only matching gets wrong.
  *
- * Run: node --test test/
+ * Run: npm test (from the package root; the script lists every suite)
  */
 
 import assert from "node:assert/strict";
@@ -95,7 +95,7 @@ function createHarness(initialSection = {}, options = {}) {
 		get(name) {
 			if (name === "settings") return settings;
 			if (name === "llm") return { listConfigurableProviders: () => DIRECTORY };
-				return undefined;
+			return undefined;
 		},
 		on(event, listener) {
 			const list = listeners.get(event) ?? [];
