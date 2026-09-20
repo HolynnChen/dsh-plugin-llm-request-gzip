@@ -239,6 +239,10 @@ npm test
 
 The plugin reads the request body's **shape**, not a protocol name. Pre-transmission and the field reordering need a top-level array that a conversation is appended to, and both chat-completions (`messages`) and Anthropic-shaped (`messages`) bodies have one, as do Responses-shaped bodies (`input`). A body whose `input` is a plain string has no such array and gets no pre-transmission rather than a wrong one — the panel reports it as `不适用` instead of an empty pool. Request-body compression and the timing breakdown are transport-level and apply to every protocol.
 
+## What each endpoint has taught us
+
+The settings card reports, per endpoint, what real traffic has established: whether a compressed body was ever refused (and so whether gzip has taken over from brotli), whether pre-transmission was switched off because the endpoint would not take a chunked body, and how many compression attempts have failed in a row. It is a record of observations, not a probe — nothing is sent to produce it — and `scripts/probe-encodings.mjs` remains the way to ask the question before any traffic exists.
+
 ## What this cannot do
 
 The plugin sits at `fetch`, so it only ever sees requests that go through it, and it only rewrites bodies it can prove are safe to rewrite.

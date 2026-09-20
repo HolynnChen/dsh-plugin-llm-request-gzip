@@ -229,6 +229,10 @@ model-request-accelerator: sg request compressed 3043 -> 79 bytes
 
 插件判断的是请求体的**形状**，而不是协议名。预传输与字段重排需要一个「对话被不断追加」的顶层数组：chat-completions 与 Anthropic 形状的 body 用 `messages` ✓，Responses 形状的 body 用 `input` ✓，两者都支持。若 `input` 是纯字符串则没有这样的数组 ✓，它**不会得到错误的预传输**，而是一律不做 ✓ —— 面板会显示「不适用」而不是「池为空」。请求体压缩与耗时分解在传输层完成 ✓，对所有协议都生效。
 
+## 每个 endpoint 学到了什么
+
+设置卡片会**逐个 endpoint** 显示真实流量已经确定的事情 ✓：压缩 body 是否被拒绝过（因此 brotli 是否已让位给 gzip ✓）、预传输是否因为该 endpoint 不接受 chunked 请求体而被停用 ✓、以及压缩连续失败了几次 ✓。这是**观测记录**而不是探测 ✓ —— 为了得到它不会发出任何请求 ✓；而 `scripts/probe-encodings.mjs` 仍然是在**还没有流量之前**把这个问题问清楚的方式 ✓。
+
 ## 做不到的事
 
 插件坐在 `fetch` 这一层 ✓，所以它只看得见经过这里的请求 ✓，也只改写那些能**证明安全**的 body ✓。
