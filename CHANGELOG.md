@@ -4,7 +4,14 @@ Three-part versions. The panel's **检查更新** button compares the installed
 `package.json` with the one on `main`, so an entry here is worth a release only when
 something a user can see has changed.
 
-## 1.5.0
+## 1.5.1
+
+- The ledger row also reports **how many pre-transmitted requests the plugin is
+  holding right now**. Those are the connections this plugin owns; anything beyond
+  them belongs to undici's keep-alive pool or to the operating system, which is worth
+  being able to tell apart when a network tool shows more sockets than the pool size
+  suggests.
+
 
 - **The settings card shows what the timing ledger occupies** — how many sessions it
   covers and how many bytes its stored documents make up — and offers a button to

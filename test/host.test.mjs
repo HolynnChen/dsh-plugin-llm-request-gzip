@@ -1239,6 +1239,28 @@ test("writes each session's ledger and loads it back", async () => {
 	}
 });
 
+test("reports how many pre-transmitted requests are held right now", async () => {
+	const { close, requests, base } = await recordingServer();
+	const harness = createHarness({ providers: { alpha: { prewarm: true } }, prewarmPoolSize: 3 });
+	const held = () => requests.filter((entry) => !entry.completed && !entry.aborted);
+	try {
+		apply(harness.ctx);
+		const route = harness.routes.find((candidate) => candidate.path === "/api/model-request-accelerator/ledger");
+		const readStats = async () => (await route.fetch(new Request("http://localhost/api/model-request-accelerator/ledger"))).json();
+
+		assert.equal((await readStats()).heldRequests, 0, "nothing is held before a request is captured");
+
+		await runStep(harness, base, "s1", [{ role: "user", content: "one" }], "tool-calls");
+		assert.ok(await waitFor(() => held().length === 3), "the pool is held");
+		const stats = await readStats();
+		assert.equal(stats.heldRequests, 3, "and it is reported");
+		assert.equal(stats.heldConversations, 1, "for one conversation");
+	} finally {
+		harness.disposeAll();
+		close();
+	}
+});
+
 test("reports the ledger's size, and clears everything on request", async () => {
 	const storage = fakeStorage({ s1: { updatedAt: 1, rows: [{ id: 1, provider: "old", model: null, totalMs: 5 }] } });
 	const harness = createHarness({ providers: {} }, { storage });
