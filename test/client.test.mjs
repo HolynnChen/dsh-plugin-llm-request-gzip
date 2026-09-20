@@ -706,7 +706,7 @@ test("marks a row that had a pool but could not use it", async () => {
 	walk(tree);
 	const missChip = chips.find((chip) => chip.children[0] === "预热✗");
 	assert.ok(missChip !== undefined, "the row says the pool was there but unusable");
-	assert.match(String(missChip.props.title), /历史发生了变化/u, "and the tooltip gives the reason");
+	assert.match(String(missChip.props.title), /历史在两次请求之间被改写了/u, "and the tooltip gives the reason");
 });
 
 test("shows a dash, not 0B, when a response was never attributed", async () => {
