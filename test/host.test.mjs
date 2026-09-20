@@ -624,10 +624,6 @@ test("leaves the response encoding null when the gateway does not compress", asy
 
 //#region pre-transmission
 
-/**
- * A server that records the chunk timeline of every request, so a held request
- * can be told apart from an ordinary one and the wire bytes can be inspected.
- */
 /** Poll until `predicate` holds, so a test can wait for an asynchronous side effect. */
 async function waitFor(predicate, timeoutMs = 2000) {
 	const started = Date.now();
@@ -638,6 +634,10 @@ async function waitFor(predicate, timeoutMs = 2000) {
 	return predicate();
 }
 
+/**
+ * A server that records the chunk timeline of every request, so a held request
+ * can be told apart from an ordinary one and the wire bytes can be inspected.
+ */
 async function recordingServer(plan = {}) {
 	// `failAt` makes one specific request answer `status`; the rest behave.
 	const requests = [];
@@ -733,8 +733,9 @@ test("pre-transmits the shared history across a pool, then sends only the increm
 			{ role: "user", content: "turn two" }
 		], "tool-calls");
 
-		// The oldest member — the one in flight longest — is the one consumed.
-		assert.equal(held[0].completed, true, "the oldest member served the request");
+		// A claim takes the member whose prefix the arriving body continues furthest.
+		// These members all carry the same prefix, so the first one in the pool wins.
+		assert.equal(held[0].completed, true, "the first member served the request");
 		assert.ok(held[0].firstChunkAt <= beforeSecondStep, "its history was on the wire before the step was even issued");
 		assert.ok(held[0].chunks.length >= 2, "the increment was written into it");
 		assert.ok(held[0].chunks[0].size > held[0].chunks.at(-1).size, "the history dwarfs the increment");
@@ -790,7 +791,7 @@ test("abandons the whole pool when the history no longer matches", async () => {
 	}
 });
 
-test("pre-transmission composes with gzip instead of replacing it", async () => {
+test("pre-transmission composes with compression instead of replacing it", async () => {
 	const { close, requests, base } = await recordingServer();
 	const harness = createHarness({ providers: { alpha: { prewarm: true, enabled: true, minBytes: 0 } }, prewarmPoolSize: 2 });
 	const first = [{ role: "user", content: "x".repeat(20000) }];
