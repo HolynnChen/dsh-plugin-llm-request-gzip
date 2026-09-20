@@ -842,22 +842,23 @@ test("keeps the pool after a turn ends, and lets idleness expire it", async () =
 	}
 });
 
-
 test("bounds the total number of held requests across conversations", async () => {
 	const { close, requests, base } = await recordingServer();
 	const harness = createHarness({ providers: { alpha: { prewarm: true } }, prewarmPoolSize: 2 });
+	const held = () => requests.filter((entry) => !entry.completed && !entry.aborted);
+	// Two held per conversation, and the total cap is the pool size times eight, so
+	// nine conversations want eighteen and have to settle at sixteen.
+	const CAP = 2 * 8;
 	try {
 		apply(harness.ctx);
-		for (const session of ["s1", "s2", "s3"]) await runStep(harness, base, session, [{ role: "user", content: session }], "tool-calls");
-		// Two per conversation, three conversations.
-		assert.ok(await waitFor(() => requests.filter((entry) => !entry.completed && !entry.aborted).length === 6), "each conversation holds its own pool");
-		assert.equal(requests.filter((entry) => !entry.completed && !entry.aborted).length, 6);
+		for (let index = 0; index < 9; index++) await runStep(harness, base, `s${String(index)}`, [{ role: "user", content: `session ${String(index)}` }], "tool-calls");
+		assert.ok(await waitFor(() => held().length >= CAP), "pools accumulate across conversations");
+		assert.ok(held().length <= CAP, `the total cap holds (${String(held().length)} were open)`);
 	} finally {
 		harness.disposeAll();
 		close();
 	}
 });
-
 
 //#endregion
 
@@ -952,11 +953,11 @@ test("keeps the pool across a turn boundary", async () => {
 	const held = () => requests.filter((entry) => !entry.completed && !entry.aborted);
 	try {
 		apply(harness.ctx);
-		// A turn that ends `stop`, which normally releases the pool outright.
+		// A turn that ends `stop`, which used to release the pool outright.
 		await runStep(harness, base, "s1", [{ role: "user", content: "hi" }], "stop");
 		assert.ok(await waitFor(() => held().length === 2), "the pool is held");
 		await new Promise((resolve) => setTimeout(resolve, 40));
-		assert.equal(held().length, 2, "and it survives the turn boundary because a turn is already queued");
+		assert.equal(held().length, 2, "and it survives the turn boundary with nothing queued either");
 
 		// The queued turn repeats this history, so the pool serves it.
 		await runStep(harness, base, "s1", [{ role: "user", content: "hi" }, { role: "assistant", content: "hello" }, { role: "user", content: "next" }], "stop");
