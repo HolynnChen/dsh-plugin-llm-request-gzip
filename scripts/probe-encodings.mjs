@@ -60,10 +60,25 @@ async function probe(encoding) {
 	try {
 		const response = await fetch(`${base}/chat/completions`, { method: "POST", headers, body });
 		const text = await response.text();
-		// A shape rejection is about the encoding; anything else means the body was
-		// decoded and the endpoint moved on to judging the request itself.
-		const verdict = response.ok || ![411, 415, 501].includes(response.status) ? "accepted (decoded)" : "REFUSED";
-		return `${String(encoding ?? "identity").padEnd(8)} HTTP ${response.status}  ${verdict}  ${text.slice(0, 80).replace(/\s+/gu, " ")}`;
+		// A shape rejection is unambiguously about the encoding. Anything else says
+		// the endpoint got past the body — but only if it read the body at all: a
+		// gateway that answers 401 before parsing looks identical to one that decoded
+		// the body and then rejected the token. Without a credential the probe can
+		// only report the first two, so it says which it is rather than guessing.
+		// Only two answers are definitive: a shape rejection means the body was not
+		// decoded, and 2xx means the endpoint took the request. Everything else is
+		// about the request rather than the encoding — a 401 rejects the token before
+		// the body is judged, a 404 is the wrong path, a 5xx is the endpoint's own
+		// problem — so the probe reports those honestly instead of reading them as
+		// success. That is why it is worth running with a working credential.
+		let verdict;
+		if ([411, 415, 501].includes(response.status)) verdict = "REFUSED - do not enable this encoding";
+		else if (response.ok) verdict = "accepted";
+		else if ([401, 403].includes(response.status)) verdict = "inconclusive - credential rejected, the body was never judged";
+		else if ([404, 405].includes(response.status)) verdict = "inconclusive - wrong path or method";
+		else if (response.status >= 500) verdict = "inconclusive - the endpoint failed";
+		else verdict = "likely accepted - rejected the request, not the encoding";
+		return `${String(encoding ?? "identity").padEnd(8)} HTTP ${response.status}  ${verdict}  ${text.slice(0, 70).replace(/\s+/gu, " ")}`;
 	} catch (error) {
 		return `${String(encoding ?? "identity").padEnd(8)} request failed: ${String(error?.message ?? error)}`;
 	}
