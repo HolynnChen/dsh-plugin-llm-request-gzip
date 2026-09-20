@@ -263,9 +263,11 @@ The plugin sits at `fetch`, so it only ever sees requests that go through it, an
 - **Compression needs the far end to decode it.** gzip is near-universal; brotli is not. If an endpoint answers 411/415/501 to a compressed body the plugin retries it as gzip, remembers the endpoint, and gets out of the way; `scripts/probe-encodings.mjs` answers the same question up front, with a one-token request instead of a real conversation.
 - **The plugin can be slower than the wrapper, not faster.** It moves bytes off the critical path and shrinks them; it does not change what the model does with them.
 
+Release notes live in [CHANGELOG.md](./CHANGELOG.md).
+
 ## Updating
 
-The plugin carries a three-part version (`package.json`, currently `1.3.2`), and the settings card shows it with a button. **Opening the card checks by itself** and says so — a check that ran in the last five minutes is reused rather than repeated, and the button always asks afresh. **检查更新** asks the Host for the version published on the repository's `main` branch and compares the two; when the published one is newer the button becomes **更新到 X**.
+The plugin carries a three-part version (`package.json`, currently `1.4.0`), and the settings card shows it with a button. **Opening the card checks by itself** and says so — a check that ran in the last five minutes is reused rather than repeated, and the button always asks afresh. **检查更新** asks the Host for the version published on the repository's `main` branch and compares the two; when the published one is newer the button becomes **更新到 X**.
 
 The update itself is a fast-forward pull in the plugin's own directory — exactly what the installer does — run without a shell and with a timeout. A version that cannot be parsed on either side is never treated as newer, so a typo cannot offer a downgrade. **After an update the plugin still runs the old code until `dsh web` is restarted**; the card says so.
 
