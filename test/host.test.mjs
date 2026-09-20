@@ -159,6 +159,7 @@ function bodyOf(call) {
  * @param listeners - recorded event listeners.
  * @param provider - the provider route being streamed.
  * @param request - the fetch call the fake adapter performs.
+ * @param sessionId - the session to attribute the call to, when a test needs one.
  */
 async function streamWithFetch(listeners, provider, request, sessionId) {
 	const waterfall = listeners.get("llm/stream")[0];
