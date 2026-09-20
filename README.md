@@ -224,20 +224,28 @@ npm test
 - `test/host.test.mjs` runs the real `apply()` against a fake Cordis context and a spied `globalThis.fetch`, covering schema resolution, the settings hook contract, `llm/stream` attribution, and the fetch rewrite. Its fixture deliberately reproduces the awkward case — two routes sharing one endpoint — to prove the switch is genuinely per-provider. It also measures a **real** request end to end: a local SSE endpoint whose think time, first-token delay and decode window are separated on purpose, driven through the plugin's real transport diagnostics.
 - `test/client.test.mjs` executes the real browser bundle under a stubbed module loader and a hook-tracking React stand-in, so it can render the card, click it and re-render: that the bundle id matches the package name, that the card registers on the settings namespace and starts **collapsed**, that the timing switch writes a top-level field, and that the timing view is registered only while the preference is on — including that it stays undecided until the first section arrives and is added or removed as the preference changes.
 - `test/timing.test.mjs` drives the phase arithmetic with injected clocks, so every boundary is asserted at an exact millisecond, including the cases where a phase is genuinely absent.
+- `test/prewarm.test.mjs` covers the prefix scanner and the field reordering against bodies of both shapes, including the ones that must be refused.
+- `test/version.test.mjs` covers three-part comparison, including the cases a string comparison gets wrong and the ones that must not be read as an update.
 
 ## Layout
 
 | File | Role |
 | --- | --- |
 | `install.sh` | One-command installer: clones the package into the profile and registers it in `cordis.patch.yml`. |
-| `lib/compress.js` | Gzip decision core: policy compilation, endpoint index, attribution resolution, gzip plan, header rewriting. No Cordis, globals, or zlib, so it is directly unit-testable. |
-| `lib/timing.js` | Timing state machine: phase boundaries, throughput, per-session ring buffer, detached wire projection. Pure over injected clocks. |
+| `lib/compress.js` | Compression decision core: policy compilation, endpoint index, attribution resolution, the encoding plan, header rewriting. No Cordis, globals, or zlib, so it is directly unit-testable. |
+| `lib/timing.js` | Timing state machine: phase boundaries, throughput, the per-session ring buffer, and the summary the page renders. Pure over injected clocks. |
 | `lib/index.js` | Host half: settings section, `llm/stream` attribution, the timing measurement and its authenticated `/api` route, `globalThis.fetch` patch and restore. |
 | `lib/client.js` | Browser half: the settings card and the request-timing view. Plain CJS factory contract, no JSX or ESM syntax. |
+| `lib/prewarm.js` | Pre-transmission core: the shared-prefix scanner, the field reordering, and the body-shape checks. Pure, so it is unit-testable. |
+| `lib/ledger.js` | The durable per-session store, built on the deployment's storage domain. |
+| `lib/version.js` | Three-part version parsing and comparison, which the update button reads. |
+| `scripts/probe-encodings.mjs` | Asks an endpoint which request encodings it decodes, before there is traffic to learn from. |
+| `README.zh.md` | Chinese documentation. |
 
 ## License
 
 [MIT](./LICENSE)
+
 ## Protocols
 
 The plugin reads the request body's **shape**, not a protocol name. Pre-transmission and the field reordering need a top-level array that a conversation is appended to, and both chat-completions (`messages`) and Anthropic-shaped (`messages`) bodies have one, as do Responses-shaped bodies (`input`). A body whose `input` is a plain string has no such array and gets no pre-transmission rather than a wrong one — the panel reports it as `不适用` instead of an empty pool. Request-body compression and the timing breakdown are transport-level and apply to every protocol.
