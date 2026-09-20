@@ -138,10 +138,10 @@ The card lives in **Settings → Plugins → Configuration**, collapsed like eve
 **One row per provider route**
 
 - **Toggle** — compress this provider's model requests.
-- **Minimum body size (bytes)** — default `1024`. Smaller requests are sent as-is, and compression is skipped whenever it would not actually make the body smaller.
+- **Minimum body size** — `1024`, not offered in the card. Smaller requests are sent as-is, and compression is skipped whenever it would not actually make the body smaller. Set it in `settings.yaml` if a gateway wants a different threshold.
 - **Algorithm** — **brotli at quality 9** by default, measured at roughly 5–15% smaller than gzip for a comparable amount of time. Brotli's own default is quality 11, which is deliberately not used: it costs about a second of *synchronous* CPU per megabyte, blocking the event loop, for only a few percent more. A request body has no negotiation, so if an endpoint answers a shape rejection (411/415/501) to a brotli body the request is retried as gzip — the adapter never sees a failure it would not have seen uncompressed — and that endpoint is remembered, so brotli is attempted there exactly once. Choose `gzip` to never attempt it.
 
-Each route's endpoint is shown next to it. Routes that share one endpoint are grouped, but **each one is configured independently**: the plugin attributes every model call to the provider that issued it, and that provider's own switches decide. The endpoint only decides when a request cannot be attributed at all, which is the case the grouping note warns about.
+Routes that share one endpoint are grouped, and **each one is configured independently**: the plugin attributes every model call to the provider that issued it, and that provider's own switches decide. The endpoint only decides when a request cannot be attributed at all.
 
 Settings persist under the `model-request-accelerator` key of `settings.yaml`:
 
@@ -169,7 +169,7 @@ Each conversation's pool holds `prewarmPoolSize` members (default `3`). Members 
 - **Open** — a model call goes out, so its own history is known; every member is advanced to it, and the pool is refilled. The bytes are slices of the request that was just captured — never reconstructed.
 - **Reorder** — the adapters put `messages` second and everything fixed after it: the tool schemas above all, then the stream flag, the tool choice and the rest. A prefix can only be the beginning of a body, so none of that could ever be pre-sent and was uploaded again on every request. Since JSON objects are unordered, the plugin moves `messages` to the end — one key, every other field left in place — and the whole fixed part then travels inside the prefix. The live increment falls from about 50KB of text to just the new turn, under a kilobyte on the wire. It is deliberately minimal and refused whenever it cannot be proven byte-safe: the body must be exactly `JSON.stringify` output, so re-serializing leaves every field's own bytes alone. A relay that matches on the body's shape answers 400/422; that request is then sent again in the adapter's own order, the endpoint is remembered, and the pools built in the rejected order are released.
 - **Consume** — the next request claims the **oldest** member whose bytes it continues and whose headers still match; the survivors are advanced and the pool refilled.
-- **Keep** — a step that ends the turn (`stop`, `max-tokens`, an error, an interruption) rather than `tool-calls` leaves the pool exactly where it is. A finished conversation is usually a pause, and the next question repeats the same history, so the members would have been reused verbatim. The hold timer owns them instead, and it measures **idleness**: it restarts on every advance, so a member expires only after `prewarmHoldMs` with nothing happening. Nothing reconnects while a conversation sits idle, because members are opened by a captured request and by nothing else. The same applies after a mismatch: the pool is abandoned *and immediately re-opened from the prefix that was just captured*, so the following step is pre-transmitted again. Every member also expires after `prewarmHoldMs` of **idleness** — the timer restarts on each advance, so a member that keeps moving with the conversation is not retired by age.
+- **Keep** — a step that ends the turn (`stop`, `max-tokens`, an error, an interruption) rather than `tool-calls` leaves the pool exactly where it is. A finished conversation is usually a pause, and the next question repeats the same history, so the members would have been reused verbatim. The hold timer owns them instead, and it measures **idleness**: it restarts on every advance, so a member expires only after `prewarmHoldMs` with nothing happening. Nothing reconnects while a conversation sits idle, because members are opened by a captured request and by nothing else. A mismatch is the same: the pool is abandoned and rebuilt from the prefix that was just captured, so the following step is pre-transmitted again.
 
 The pool belongs to one **agent**, not to a session tree. A subagent is a separate agent with its own session id, and the loop stamps each request with its own agent's session, so a child's pool never mixes with its parent's — even when the two histories are byte-identical, which is the case a shared pool would silently corrupt.
 
@@ -181,14 +181,14 @@ The ledger is **durable per session**: rows are stored one document per session 
 
 Rows that used it carry a **预热** chip; hover it for the pre-sent bytes, the increment, and how long the member was held. That last number is the lead time actually won, and it is the honest way to tell whether a longer pool is worth anything on a given link.
 
-gzip and pre-transmission compose: the split keeps **one** deflate stream open across every part, so the parts decompress as a single body and the compression is kept rather than traded away.
+Compression and pre-transmission compose: the split keeps **one** codec stream open across every part, so the parts decompress as a single body and the compression is kept rather than traded away.
 
 The held requests are closed by themselves, in every case. A consumed member is finished by writing its increment and closing the body (`stream.close()`), after which undici returns the socket to its keep-alive pool rather than closing it — the same connection then serves later requests. Each of those is a **brand-new HTTP request** on a reused connection: the far end runs its per-request work — routing, quota, token counting — exactly as it would on a fresh socket, and only the TCP and TLS handshakes are skipped. Transport diagnostics behave the same way: they are socket-scoped, which is why the server phase went missing on every pre-transmitted request but the first until the measurement was paired with its own request object. An abandoned member is aborted by whichever path abandoned it: the hold timer, a mismatch, a refused body, the pool being released, or the plugin unloading. Nothing has to be closed by hand, and nothing lingers past `prewarmHoldMs` of idleness.
 
 ### Safety notes
 
 - Every provider is **off by default**.
-- Confirm your gateway accepts `content-encoding: gzip` on a provider you can afford to break before enabling it for the provider serving your current session. If the gateway does not support it, that provider's requests will fail.
+- Confirm your gateway accepts the encoding before relying on it for the provider serving your current session. Brotli is not universal, which is why the fallback and `scripts/probe-encodings.mjs` exist; gzip is near-universal, so a gateway that rejects it is rare. If it does not support what is being sent, that provider's requests will fail.
 - If the rewrite itself throws, the plugin falls back to sending the request uncompressed: a bug in this plugin cannot break model requests.
 
 ### Confirming it works
@@ -196,14 +196,14 @@ The held requests are closed by themselves, in every case. A consumed member is 
 The Host logs one line per compressed request:
 
 ```
-model-request-accelerator: sg request compressed 3043 -> 79 bytes
+model-request-accelerator: sg request compressed 3813841 -> 1461179 bytes
 ```
 
 `endpoint-matched` appears instead of a provider name when a request could not be attributed to a provider (see below).
 
 ## How provider attribution works
 
-A request URL is all the `fetch` layer sees. When several provider routes share one endpoint — as they do when e.g. `llm-deepseek` and `llm-pi-ai.providers.sg` both point at the same gateway — the URL alone cannot tell them apart, and a per-provider switch would silently behave per-endpoint.
+A request URL is all the `fetch` layer sees, and when several provider routes share one endpoint — as they do when e.g. `llm-deepseek` and `llm-pi-ai.providers.sg` both point at the same gateway — the URL alone cannot tell them apart. Matching on it would make a per-provider switch behave per-endpoint.
 
 So the plugin hooks the `llm/stream` waterfall and binds the streaming call's provider into an `AsyncLocalStorage` scope. Each iterator resumption runs inside that scope, so the identity survives the adapter's internal `await`s (image serialization, file uploads) and concurrent streams cannot clobber each other. Endpoint matching is only a fallback for requests with no attributed provider, where the longest matching endpoint wins and the policies of the routes on it are OR-ed.
 
