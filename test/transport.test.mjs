@@ -11,6 +11,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import diagnosticsChannel from "node:diagnostics_channel";
+import { createRequire } from "node:module";
 import { createTransport, isTransportFailure } from "../lib/transport.js";
 
 /** A fake undici module pair; `fetch` records what it was given. */
@@ -245,4 +246,24 @@ test("matches a connection whose default port is reported as empty", async () =>
 		onConnected: (protocol) => protocols.push(protocol)
 	});
 	assert.deepEqual(protocols, ["h2"], "an implicit 443 on both sides is the same port");
+});
+
+test("resolves a copy of undici without being told where it is", async () => {
+	// The deployment that caught this: an installed plugin lives at
+	// `<profile>/plugins/<name>/`, and the only reachable copy of undici is in the
+	// profile's hoisted `node_modules` two levels up — not in the plugin's own. Node's
+	// own resolution is what finds it, so the explicit candidate list must not be the
+	// only path. Without this the transport silently reported itself unavailable and
+	// h2 would have been off in every real install while every test passed.
+	const transport = createTransport();
+	const reachable = transport.enabled({ provider: "sg", policy: { http2: true }, url: "https://gw.example/v1/chat/completions" });
+	const viaResolve = (() => {
+		try {
+			return createRequire(import.meta.url).resolve("undici") !== undefined;
+		} catch {
+			return false;
+		}
+	})();
+	assert.equal(reachable, viaResolve, "the transport is available exactly when undici is resolvable from the plugin");
+	transport.dispose();
 });
