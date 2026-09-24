@@ -145,27 +145,56 @@ test("does not report a connection negotiated for another origin", async () => {
 	assert.deepEqual(protocols, [], "another origin's connection is not this request's protocol");
 });
 
-test("a failing origin is condemned once and never tried again", async () => {
-	const failures = [];
+test("an origin is retried once, then condemned for good", async () => {
+	// One failure is usually this connection's rather than this endpoint's, and
+	// condemning an origin is permanent — so a single reset stream, or a socket
+	// reclaimed while it was idle, must not be enough to write h2 off.
+	const attempts = [];
+	const log = [];
 	const fake = fakePair({
 		fetch: () => {
-			failures.push(1);
+			attempts.push(1);
 			const error = new Error("fetch failed");
 			error.cause = new Error("other side closed");
 			return Promise.reject(error);
 		}
 	});
-	const transport = createTransport({ load: () => fake.pair, log: (message) => failures.push(message) });
+	const transport = createTransport({ load: () => fake.pair, log: (message) => log.push(message) });
 	const url = "https://bad.example/v1/chat/completions";
+
 	const first = await transport.execute(url, { method: "POST", body: "{}" });
 	assert.equal(first.sent, false);
 	assert.equal(first.reason, "transport");
+	assert.equal(attempts.length, 2, "the first attempt is retried once");
 	assert.equal(transport.isBlocked("https://bad.example"), true);
 	assert.equal(transport.enabled({ provider: "sg", policy: ON, url }), false, "the next request goes straight to the default transport");
+
 	const second = await transport.execute(url, { method: "POST", body: "{}" });
 	assert.equal(second.sent, false);
 	assert.equal(second.reason, "unavailable");
-	assert.equal(failures.length, 2, "one attempt, one warning — a second request must not try again");
+	assert.equal(attempts.length, 2, "a condemned origin is never tried again");
+	assert.equal(log.length, 1, "and it is reported once, not per request");
+});
+
+test("a failure that turns out to be the connection's leaves the origin alone", async () => {
+	const attempts = [];
+	const fake = fakePair({
+		fetch: () => {
+			attempts.push(1);
+			if (attempts.length === 1) {
+				const error = new Error("fetch failed");
+				error.cause = new Error("other side closed");
+				return Promise.reject(error);
+			}
+			return Promise.resolve({ status: 200 });
+		}
+	});
+	const transport = createTransport({ load: () => fake.pair });
+	const outcome = await transport.execute("https://gw.example/v1/chat/completions", { method: "POST", body: "{}" });
+	assert.equal(outcome.sent, true, "the retry carried the request");
+	assert.equal(attempts.length, 2);
+	assert.equal(transport.isBlocked("https://gw.example"), false, "a recovered origin keeps its HTTP/2");
+	transport.dispose();
 });
 
 test("an abort is the caller's business, not the endpoint's", async () => {
@@ -365,5 +394,31 @@ test("does not let a cleartext upgrade's preface overwrite its outcome", async (
 	await transport.execute("https://gw.example/v1/chat/completions", { method: "POST", body: "{}" }, { onConnected: (protocol) => seen.push(protocol) });
 	assert.deepEqual(seen, ["h2"], "h2 is the outcome; the h1 socket it upgraded from is not");
 	assert.equal(transport.protocolFor("https://gw.example"), "h2");
+	transport.dispose();
+});
+
+test("does not retry a body that cannot be sent twice", async () => {
+	// Replaying a consumed stream throws "Response body object should not be disturbed or
+	// locked" — a second failure that condemns the origin for a reason that has nothing
+	// to do with the endpoint. A held member's body is exactly this shape, so the retry
+	// has to stand down rather than double the failure.
+	const attempts = [];
+	const fake = fakePair({
+		fetch: () => {
+			attempts.push(1);
+			const error = new Error("fetch failed");
+			error.cause = new Error("other side closed");
+			return Promise.reject(error);
+		}
+	});
+	const transport = createTransport({ load: () => fake.pair });
+	const outcome = await transport.execute("https://gw.example/v1/chat/completions", {
+		method: "POST",
+		body: new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode("{}")); } }),
+		duplex: "half"
+	});
+	assert.equal(attempts.length, 1, "a streamed body is attempted once and not replayed");
+	assert.equal(outcome.sent, false);
+	assert.equal(outcome.reason, "transport");
 	transport.dispose();
 });

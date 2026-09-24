@@ -6,7 +6,7 @@ something a user can see has changed.
 
 ## 1.7.1
 
-Three defects the 1.7.0 release carried, all found by looking at a real session's
+Six defects the 1.7.0 release carried, all found by looking at a real session's
 ledger rather than at the tests — every one of them passed with the suite green.
 
 - **Pre-transmission never used HTTP/2.** A held member's connection is opened in the
@@ -27,6 +27,17 @@ ledger rather than at the tests — every one of them passed with the suite gree
   connections on one origin and port in order — the http/1.1 socket it starts as, then
   the h2 session it became — so "the last announcement wins" recorded `h1` for requests
   that really did travel over h2. `h2` now wins whenever it is mentioned at all.
+- **A held member was listened for at the wrong time.** Its caller deliberately does not
+  await the response — a member is *meant* to stay open — so the connection it opened was
+  announced after the listener had already been removed, and the member was remembered as
+  having negotiated nothing. The listener now lives exactly as long as the send.
+- **One failure no longer condemns an endpoint.** A reset stream, or a socket reclaimed
+  while it was idle, is usually that connection's fault rather than the endpoint's, and
+  condemning an origin is permanent — so a request is retried once on a fresh connection
+  before its origin is written off. The retry stands down for a body that cannot be sent
+  twice, because replaying a consumed stream throws `Response body object should not be
+  disturbed or locked` — a second failure that would condemn the endpoint for a reason
+  that has nothing to do with it, and exactly the shape a held member sends.
 
 ## 1.7.0
 
