@@ -317,3 +317,53 @@ test("a failed attempt does not leave a protocol behind for the origin", async (
 	assert.deepEqual(seen, [], "a condemned origin reports no protocol, because it never used one");
 	transport.dispose();
 });
+
+test("hands back the protocol a member's connection already negotiated", async () => {
+	// This is the pre-transmission path: a pool member opens its connection *while it
+	// is being opened*, long before the request that eventually claims it arrives. By
+	// then no connection event will fire again, so the protocol has to be available
+	// after the fact — otherwise every pre-transmitted row reports nothing while the
+	// member really did travel over h2.
+	const fake = fakePair();
+	const pair = {
+		...fake.pair,
+		fetch: async (url, init) => {
+			diagnosticsChannel.channel("undici:client:connected").publish({ connectParams: { hostname: "gw.example", protocol: "https:", port: "", version: "h2" } });
+			return fake.pair.fetch(url, init);
+		}
+	};
+	const transport = createTransport({ load: () => pair });
+	assert.equal(transport.protocolFor("https://gw.example"), undefined, "nothing is known before anything connected");
+	// Open the member: this is what `openMember` does, in its own async context.
+	const opened = await transport.execute("https://gw.example/v1/chat/completions", { method: "POST", body: "{}" }, { onConnected: () => {} });
+	assert.equal(opened.sent, true);
+	// Later, the request that claims it runs in a different scope and sees no event.
+	assert.equal(transport.protocolFor("https://gw.example"), "h2", "the member's connection is still the answer");
+	assert.equal(transport.protocolFor("https://other.example"), undefined, "and it is per origin");
+	transport.dispose();
+	assert.equal(transport.protocolFor("https://gw.example"), undefined, "dispose forgets it");
+});
+
+test("does not let a cleartext upgrade's preface overwrite its outcome", async () => {
+	// An h2c upgrade announces its connections in order: the http/1.1 socket it starts
+	// with, then the h2 session it became. Both carry the same origin and port, so
+	// "the last announcement wins" hands back `h1` for a request that really did
+	// travel over h2 — which is what made a whole session's rows report h1.
+	const fake = fakePair();
+	const pair = {
+		...fake.pair,
+		fetch: async (url, init) => {
+			const channel = diagnosticsChannel.channel("undici:client:connected");
+			const base = { hostname: "gw.example", port: "", protocol: "https:" };
+			channel.publish({ connectParams: { ...base, version: "h2" } });
+			channel.publish({ connectParams: { ...base, version: "h1" } });
+			return fake.pair.fetch(url, init);
+		}
+	};
+	const transport = createTransport({ load: () => pair });
+	const seen = [];
+	await transport.execute("https://gw.example/v1/chat/completions", { method: "POST", body: "{}" }, { onConnected: (protocol) => seen.push(protocol) });
+	assert.deepEqual(seen, ["h2"], "h2 is the outcome; the h1 socket it upgraded from is not");
+	assert.equal(transport.protocolFor("https://gw.example"), "h2");
+	transport.dispose();
+});

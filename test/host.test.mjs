@@ -517,6 +517,45 @@ test("falls back to the default transport, and says so, after an origin fails ov
 	}
 });
 
+test("a pre-transmitted row reports the protocol its member's connection negotiated", async () => {
+	// The path this was found broken on: a held member negotiates its connection while
+	// it is being opened, in another async scope entirely, and the request that later
+	// claims it never sees a connection event again. Every pre-transmitted row would
+	// then report no protocol — and with pre-transmission on, that is every row.
+	const { server, base, seen } = await h2cServer();
+	const harness = createHarness({
+		providers: { alpha: { prewarm: true, http2: true } },
+		allowInsecureH2c: true,
+		prewarmPoolSize: 3,
+		timing: true
+	});
+	try {
+		apply(harness.ctx);
+		const history = [{ role: "user", content: "turn one ".repeat(200) }];
+		await runStep(harness, base, "h2pre", history, "tool-calls");
+		assert.ok(seen.length >= 1, "the first step reached the h2 endpoint, so a connection exists");
+
+		await runStep(harness, base, "h2pre", [
+			...history,
+			{ role: "assistant", content: "ok" },
+			{ role: "user", content: "turn two" }
+		], "tool-calls");
+
+		const measurements = await readLedger(harness, "h2pre");
+		const [first, second] = measurements;
+		assert.equal(first.protocol, "h2", "the request that opened the connection reports it");
+		assert.notEqual(second.prewarm, null, "the second step really was served from a held member");
+		assert.equal(second.protocol, "h2", "and the row that reused that connection reports the same protocol");
+		// The pool members themselves are held requests, so they must be opened on the
+		// same transport as the request that captured them — otherwise the whole pool
+		// silently sits on http/1.1 while the rows claim h2.
+		assert.ok(seen.every((entry) => entry.protocol === "h2"), "every held member also travelled over h2");
+	} finally {
+		server.close();
+		harness.disposeAll();
+	}
+});
+
 test("measures a real request end to end from transport diagnostics", async () => {	const plan = { thinkMs: 60, firstTokenMs: 60, decodeMs: 120, chunks: 4, outputTokens: 40 };
 	const { server, base } = await sseServer(plan);
 	// No provider policy: timing must not depend on compression being enabled.

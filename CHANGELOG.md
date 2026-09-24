@@ -4,6 +4,30 @@ Three-part versions. The panel's **检查更新** button compares the installed
 `package.json` with the one on `main`, so an entry here is worth a release only when
 something a user can see has changed.
 
+## 1.7.1
+
+Three defects the 1.7.0 release carried, all found by looking at a real session's
+ledger rather than at the tests — every one of them passed with the suite green.
+
+- **Pre-transmission never used HTTP/2.** A held member's connection is opened in the
+  `previous` step's async scope by `openMember`, which called `rawFetch` — the built-in
+  transport — so the entire pool sat on HTTP/1.1 while the requests that later claimed
+  those members travelled over h2. That silently gave up the header compression and
+  multiplexing which are the only things h2 pays for here. It went unnoticed because a
+  gateway that speaks both answers http/1.1 happily; an h2-only endpoint failed the
+  handover outright. Members now go through the same transport decision as any other
+  model request, and the descriptor carries the attributed provider, because a member
+  has no ambient scope to resolve a policy from and endpoint matching does not know a
+  route's `http2` setting.
+- **A pre-transmitted row could not report its protocol.** Its connection was
+  negotiated when the member was *opened*, and no connection event fires again for the
+  connection it then reuses, so the row reported nothing. The transport now hands back
+  what it already knows for an origin. With pre-transmission on, this was every row.
+- **A cleartext upgrade overwrote its own outcome.** An h2c upgrade announces two
+  connections on one origin and port in order — the http/1.1 socket it starts as, then
+  the h2 session it became — so "the last announcement wins" recorded `h1` for requests
+  that really did travel over h2. `h2` now wins whenever it is mentioned at all.
+
 ## 1.7.0
 
 - **HTTP/2, per provider, with a fallback that cannot be worse than not having it.**
