@@ -344,10 +344,32 @@ test("joins the provider directory with the stored policy and both profile shape
 	const snapshot = await ctl.read();
 	assert.equal(snapshot.revision, 7);
 	assert.equal(snapshot.prewarmPoolSize, 3, "the pool size is read for the panel");
+	// `http2` is not stored for either route, so each shows what the Host would
+	// decide: off for a route that does not pre-transmit, on for the one that does.
 	assert.deepEqual(snapshot.routes, [
-		{ id: "alpha", name: "Alpha", endpoint: SITE, enabled: false, minBytes: 1024, prewarm: false, encoding: "auto" },
-		{ id: "beta", name: "Beta", endpoint: SITE, enabled: true, minBytes: 4096, prewarm: true, encoding: "auto" }
+		{ id: "alpha", name: "Alpha", endpoint: SITE, enabled: false, minBytes: 1024, prewarm: false, http2: false, encoding: "auto" },
+		{ id: "beta", name: "Beta", endpoint: SITE, enabled: true, minBytes: 4096, prewarm: true, http2: true, encoding: "auto" }
 	]);
+});
+
+test("offers HTTP/2 per route, defaulting to the pre-transmission rule", async () => {
+	const { exports } = loadBundle();
+	// A route that says nothing inherits the rule; a route that says `false` keeps
+	// it off even while it pre-transmits; the section switch is a kill switch.
+	const inherited = createClientContext();
+	exports.apply(inherited.ctx);
+	const inheritedRoutes = (await inherited.registrationFor("settings.plugin.item").options.inject().ctl.read()).routes;
+	assert.equal(inheritedRoutes.find((route) => route.id === "beta").http2, true, "a pre-transmitting route gets h2 without asking");
+
+	const refused = createClientContext({ providers: { beta: { enabled: true, minBytes: 4096, prewarm: true, http2: false } } });
+	exports.apply(refused.ctx);
+	const refusedRoutes = (await refused.registrationFor("settings.plugin.item").options.inject().ctl.read()).routes;
+	assert.equal(refusedRoutes.find((route) => route.id === "beta").http2, false, "a route that turned it off keeps it off");
+
+	const killed = createClientContext({ http2: false, providers: { beta: { enabled: true, prewarm: true } } });
+	exports.apply(killed.ctx);
+	assert.equal((await killed.registrationFor("settings.plugin.item").options.inject().ctl.read()).http2, false, "the section switch is read");
+	assert.equal((await killed.registrationFor("settings.plugin.item").options.inject().ctl.read()).routes.find((route) => route.id === "beta").http2, false, "and it overrides the rule");
 });
 
 test("writes the pool size as a top-level field", async () => {
@@ -765,16 +787,16 @@ test("holds the headings and every provider in one grid", async () => {
 	// change without the test losing the grid it is about.
 	const grid = collect(body, (node) => Array.isArray(node.children) && node.children.some((child) => child?.props?.key === "h-name"))[0];
 	assert.ok(grid !== undefined, "headings and rows share one grid");
-	assert.deepEqual(grid.children.slice(0, 4).map((cell) => cell.children[0]), ["提供方", "算法", "压缩", "预传输"], "the provider leads, then its algorithm and its two switches");
+	assert.deepEqual(grid.children.slice(0, 5).map((cell) => cell.children[0]), ["提供方", "算法", "压缩", "HTTP/2", "预传输"], "the provider leads, then its algorithm and its three switches");
 	assert.ok(String(grid.props.style.gridTemplateColumns).includes("1fr"), "and the provider column takes the slack, so the table fills the panel");
 
-	// Each route contributes the same three cells, in the same order, after a group
+	// Each route contributes the same five cells, in the same order, after a group
 	// label that spans the grid (so it cannot disturb a column).
-	const cells = grid.children.slice(4).filter((child) => child.type !== "div");
+	const cells = grid.children.slice(5).filter((child) => child.type !== "div");
 	const routes = (await ctl.read()).routes;
-	assert.equal(cells.length, routes.length * 4, `four cells per route, grid held: ${JSON.stringify(grid.children.map((child) => child.props?.key ?? child.type))}`);
-	for (let index = 0; index < cells.length; index += 4) {
-		assert.deepEqual(cells.slice(index, index + 4).map((cell) => cell.type), ["span", "select", "input", "input"], "identity, algorithm, compress, pre-transmit");
+	assert.equal(cells.length, routes.length * 5, `five cells per route, grid held: ${JSON.stringify(grid.children.map((child) => child.props?.key ?? child.type))}`);
+	for (let index = 0; index < cells.length; index += 5) {
+		assert.deepEqual(cells.slice(index, index + 5).map((cell) => cell.type), ["span", "select", "input", "input", "input"], "identity, algorithm, compress, HTTP/2, pre-transmit");
 	}
 });
 

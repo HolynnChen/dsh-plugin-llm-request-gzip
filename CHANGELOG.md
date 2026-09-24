@@ -4,6 +4,41 @@ Three-part versions. The panel's **检查更新** button compares the installed
 `package.json` with the one on `main`, so an entry here is worth a release only when
 something a user can see has changed.
 
+## 1.7.0
+
+- **HTTP/2, per provider, with a fallback that cannot be worse than not having it.**
+  Node's `globalThis.fetch` speaks HTTP/1.1 only — its dispatcher is the built-in
+  undici's own Agent, which never passes `allowH2`, and that Agent class is not
+  reachable from application code — so the swap is made by driving dsh's own `undici`
+  package: its `fetch` with its own `Agent({ allowH2: true })`. The two instances must
+  never be crossed (an 8.x Agent with the built-in 7.x fetch fails with
+  `invalid onRequestStart method`), which is the rule `lib/transport.js` enforces.
+- It is **on by default for a route that pre-transmits**, because pre-transmission is
+  what actually pays for it: it re-sends the same multi-kilobyte headers every step,
+  and h2 sends only the delta, while the held pool shares one multiplexed connection.
+  A route that does not pre-transmit has to ask. `http2: false` at the section level
+  is a kill switch; `allowInsecureH2c` (default off) extends it to `http://` endpoints
+  over a cleartext h2c connection.
+- **Degradation is ALPN's, not a retry loop**: an endpoint that does not offer h2
+  simply stays on http/1.1 through the same Agent, with no error. What is left is a
+  transport that fails outright — one failure condemns that origin for the life of the
+  plugin, so the cost is one extra round trip ever rather than one per request.
+- **A fixed silent bug under h2.** undici hands HTTP/1.1 response headers over as a
+  flat list but HTTP/2 ones as a plain object, and the reader only understood the
+  list. Nothing failed loudly — the timing panel simply reported no `content-encoding`
+  on every h2 reply, which looks like a gateway that does not compress. Both shapes
+  are read now.
+- The timing row reports the protocol that **actually carried** the response, which
+  had to be learned rather than read off the response: undici's `Response` has no
+  `httpVersion`, and its `client:connected` diagnostic announces `h2` *before* a
+  cleartext upgrade is proven, so an attempt the far end refuses announces `h2` and
+  then fails. The announced version is only recorded once the send has succeeded —
+  a test pins exactly that, because the first draft got it wrong.
+- **HTTP/3 is not offered, and cannot be on this stack**: undici contains no HTTP/3
+  or QUIC code, and Node 24.12 ships neither `nghttp3` nor `ngtcp2`. A hand-built
+  HTTP/3 transport would cost every undici diagnostic the timing view and the
+  pre-transmission pool rest on.
+
 ## 1.6.1
 
 - **The installer no longer produces an unparseable patch layer from a pristine

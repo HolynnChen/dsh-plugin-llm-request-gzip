@@ -149,6 +149,9 @@ DSH 自己的那些包（`@deepseek-ai/schemastery`、`zod`、`@deepseek-ai/dsh-
 **每个提供方路由一行**
 
 - **开关**：该提供方的模型请求是否压缩。
+- **算法**：见下文。
+- **HTTP/2**：该提供方的请求是否在交换层走 HTTP/2。**对开启了预传输的路由默认打开**，其余路由需要手动勾选。
+- **预传输**：见下文。
 - **最小压缩体积**：`1024`，**面板里不提供**。更小的请求原样发送；压缩后若没有真正变小也会放弃压缩。需要别的阈值时在 `settings.yaml` 里设。
 
 共用同一 endpoint 的路由会被归为一组，但它们**各自独立配置** ✓：插件把每一次模型调用归属到发出它的提供方 ✓，由**该提供方自己的开关**决定行为 ✓。只有当请求**完全无法归属**时，才退回按 endpoint 判断 ✓。
@@ -162,13 +165,35 @@ model-request-accelerator:
       enabled: true
       minBytes: 1024
       prewarm: true
+      http2: true
   encoding: auto
   prewarmHoldMs: 120000
   prewarmPoolSize: 3
+  http2: true
+  allowInsecureH2c: false
   timing: true
 ```
 
 `encoding` 为 `auto`（**优先 brotli**）或 `gzip`，可按提供方设置，也可整节设置。**面板里的选择是按路由的** ✓ —— 就在表格的「算法」列 ✓；整节的值是**未被单独设置的路由所继承的默认值** ✓。brotli 使用 **quality 9**：实测在相近耗时下比 gzip 小约 5~15%。**刻意不用** brotli 自己的默认值 quality 11——它每 MB 要花约一秒的**同步** CPU（会阻塞事件循环），只换来几个百分点。
+
+### HTTP/2（默认对开启预传输的路由打开）
+
+**先说清楚预期**：这不是「让请求变快好几倍」的开关。真实的持久记录里，一次 2.37MB 的请求 `sendMs` 只有 **1.1ms**，而 `serverMs` 是 **3391ms**——上传早已不是瓶颈（压缩和预传输已经把它处理掉了），HTTP/2 换不来服务端的思考时间。它值钱的地方只有两处：
+
+1. **HPACK 头压缩**。预传输会反复发送**同一套**请求头（认证、指纹、客户端标识，动辄几 KB），HTTP/2 只发一次增量。这与预传输的意图是同一种优化，只是发生在头部而不是 body。
+2. **多路复用**。池子里的多条预发请求复用同一条连接，省掉多次握手，也不会互相争抢连接。
+
+**为什么需要专门处理。** Node 的 `globalThis.fetch` **只会说 HTTP/1.1**：它的 dispatcher 是内置 undici 自己的 `Agent`，而 undici 只在 `allowH2` **被显式传入**时才协商 h2，内置 Agent 不传；同时内置的 Agent 类从应用层根本拿不到（`process.getBuiltinModule` 解析不到 node 内部的 undici，那个 specifier 也不是公开的内建模块）。所以内置传输没有可用的开关。
+
+能做到的是**成对使用**：dsh 自带的 `undici` 包，用它自己的 `fetch` 驱动它自己的 `Agent({ allowH2: true })`。两个 undici 实例**不能交叉**：把 8.x 的 Agent 交给内置的 7.x `fetch` 会在派发阶段直接失败（`invalid onRequestStart method`），`lib/transport.js` 存在的意义就是钉死这条规则——**两半必须来自同一个模块实例**，任何一半解析不到，h2 就干脆不开。
+
+**降级是协议自己的，不是一个重试状态机。** h2 通过 ALPN 协商：endpoint 不提供 h2 时，同一个 Agent 会**直接走 http/1.1**，没有报错、也没有需要检测的信号。`lib/transport.js` 只负责 ALPN 覆盖不到的情形——握手式失败，或 `http://` 端点（那需要明文的 h2c，默认不做，见下）。某个 origin 失败一次就会被**永久记下**，此后该进程内不再尝试 h2，恢复在下次 `dsh web` 重启时进行。代价是**一次**多余的往返，而不是每次请求。
+
+**面板与耗时视图都会说实话**：耗时面板的行会带 `h2` 标记——**而且只在响应确实走在 h2 上时才标**。这一点很关键：undici 会在**连接建立时**就播报 `h2`，而一次被对端拒绝的明文升级同样会先播报 `h2` 然后失败；如果把「请求过 h2」当成「走了 h2」，失败的请求也会被标成 h2。插件把协商到的版本**留到请求确实成功之后**才记录，也专门有测试钉住这一点。真正协商到 h2 的 endpoint 会在设置卡片里**什么都不说**（没什么可报告的）；被放弃的 endpoint 会写明「已退回 http/1.1」。
+
+**HTTP/3 在当前内核里做不到**，因此本插件不提供：undici 里**没有任何** HTTP/3 / QUIC 代码；Node 24.12 的 `nghttp3` 与 `ngtcp2` **都不存在**（`node:quic` 即使能被探测到也只是空壳）。唯一的路子是换一套 HTTP/3 客户端库自己搭传输，代价是**丢掉全部 undici 诊断**——也就是耗时分解与预传输的池子都会失去基础。对只广告 h2 的网关，这个代价换不到任何东西。
+
+`allowInsecureH2c` 默认为 `false`。开启后，`http://` 端点也会用 HTTP/2，走的是**明文 h2c、没有证书**的连接；只在你确认这条链路可信时才开。
 
 ### 预传输（按提供方开关，默认关闭）
 
@@ -285,9 +310,11 @@ npm test
 | `lib/index.js` | Host half：settings 段、`llm/stream` 归属、耗时测量及其鉴权 `/api` 路由、`globalThis.fetch` 补丁与还原 |
 | `lib/client.js` | 浏览器 half：设置卡片与请求耗时视图。CJS factory 合约，纯 JS，无 JSX / ESM |
 | `lib/prewarm.js` | 预传输核心：共享前缀扫描、字段重排、body 形状校验。纯函数，可直接单测 |
+| `lib/transport.js` | HTTP/2 传输层：解析出**同一个** undici 模块实例，把它的 `fetch` 与它自己的 `allowH2` Agent 成对使用，逐请求决策，并把失败的 origin 记下。**构造上是可选的**——解析不到 undici 时 h2 就是关的 |
 | `lib/ledger.js` | 按会话持久化的存储，建立在部署自身的 storage domain 之上 |
 | `lib/version.js` | 三段式版本号解析与比较，供更新按钮使用 |
 | `scripts/probe-encodings.mjs` | 在还没有流量可依据之前，问清某个 endpoint 接受哪些请求编码 |
+| `test/transport.test.mjs` | h2 决策与降级的单测：两个注入点都被替换，因此不需要网络。覆盖 TLS/显式开关规则、每个 origin 一个 Agent、**拒绝交叉两个 undici 实例**、失败只记一次、取消**不**记、以及「已播报但随后失败」的连接绝不被当成用过的协议 |
 | `README.md` | 英文文档 |
 
 ## 许可

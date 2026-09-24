@@ -15,10 +15,11 @@
 
 import assert from "node:assert/strict";
 import http from "node:http";
+import http2 from "node:http2";
 import { brotliDecompressSync, gunzipSync, gzipSync } from "node:zlib";
 import { randomBytes } from "node:crypto";
 import test from "node:test";
-import { apply, Config, NS } from "../lib/index.js";
+import { apply, Config, diagnosticHeader, NS } from "../lib/index.js";
 
 /** The namespace this plugin used before it was renamed. */
 const LEGACY_NS = "llm-request-gzip";
@@ -405,8 +406,118 @@ async function* readChatStream(base, body, finishKind = "stop") {
 	}
 }
 
-test("measures a real request end to end from transport diagnostics", async () => {
-	const plan = { thinkMs: 60, firstTokenMs: 60, decodeMs: 120, chunks: 4, outputTokens: 40 };
+/**
+ * A cleartext HTTP/2 endpoint, so the h2 path can be exercised without a
+ * certificate. It reports the protocol each request actually arrived on, which
+ * is the only honest way to tell a real protocol swap from a request that was
+ * merely offered one.
+ */
+async function h2cServer() {
+	const seen = [];
+	const server = http2.createServer();
+	server.on("stream", (stream, headers) => {
+		seen.push({ protocol: "h2", encoding: headers["content-encoding"] ?? null, path: headers[":path"] });
+		const chunks = [];
+		stream.on("data", (chunk) => chunks.push(chunk));
+		stream.on("end", () => {
+			stream.respond({ ":status": 200, "content-type": "text/event-stream" });
+			stream.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "t0" } }] })}\n\n`);
+			stream.write(`data: ${JSON.stringify({ usage: { prompt_tokens: 5, completion_tokens: 2 } })}\n\n`);
+			stream.end("data: [DONE]\n\n");
+		});
+	});
+	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+	return { server, base: `http://127.0.0.1:${server.address().port}/v1`, seen };
+}
+
+/** The timings route's payload for one session. */
+async function timingsFor(harness, sessionId) {
+	const route = harness.routes.find((candidate) => candidate.path === "/api/model-request-accelerator/timings");
+	const answer = await route.fetch(new Request(`http://localhost/api/model-request-accelerator/timings?sessionId=${sessionId}`));
+	return (await answer.json()).measurements;
+}
+
+test("carries a model request over HTTP/2 and records which protocol answered", async () => {
+	const { server, base, seen } = await h2cServer();
+	// The route asks for h2 explicitly while *not* pre-transmitting, which pins the
+	// per-route field rather than the pre-transmission default, and the cleartext
+	// endpoint is only reachable at all because the section allowed h2c.
+	const harness = createHarness({
+		providers: { alpha: { enabled: true, http2: true } },
+		allowInsecureH2c: true,
+		timing: true
+	});
+	try {
+		apply(harness.ctx);
+		const waterfall = harness.listeners.get("llm/stream")[0];
+		const inner = readChatStream(base, { messages: [{ role: "user", content: "hi" }] });
+		for await (const _chunk of waterfall({ provider: "alpha", model: "m", sessionId: "h2" }, () => inner)) {
+			// Drain.
+		}
+		assert.equal(seen.length, 1, "the request reached the h2 endpoint");
+		assert.equal(seen[0].protocol, "h2", "and it arrived as a real HTTP/2 stream, not an offered upgrade");
+		const [measured] = await timingsFor(harness, "h2");
+		assert.equal(measured.protocol, "h2", "the row says which protocol carried it");
+		assert.ok(measured.sendMs !== null && measured.ttftMs !== null, "the transport diagnostics still describe an h2 request");
+	} finally {
+		server.close();
+		harness.disposeAll();
+	}
+});
+
+test("leaves the default transport alone when the provider did not ask for HTTP/2", async () => {
+	const { server, base, seen } = await h2cServer();
+	const harness = createHarness({ providers: { alpha: { enabled: true } }, allowInsecureH2c: true });
+	try {
+		apply(harness.ctx);
+		const waterfall = harness.listeners.get("llm/stream")[0];
+		const inner = readChatStream(base, { messages: [{ role: "user", content: "hi" }] });
+		// The built-in transport speaks http/1.1, so an h2-only endpoint cannot serve
+		// it — which is exactly the proof that the request did not use h2.
+		await assert.rejects(async () => {
+			for await (const _chunk of waterfall({ provider: "alpha", model: "m", sessionId: "h1" }, () => inner)) {
+				// Drain.
+			}
+		});
+		assert.deepEqual(seen, [], "nothing reached the h2 endpoint without the per-route opt-in");
+		const [measured] = await timingsFor(harness, "h1");
+		assert.equal(measured.protocol, null, "and the row claims no protocol it did not use");
+	} finally {
+		server.close();
+		harness.disposeAll();
+	}
+});
+
+test("falls back to the default transport, and says so, after an origin fails over HTTP/2", async () => {
+	// An endpoint that offers h2 through ALPN while the transport cannot complete the
+	// handshake: the failure is the transport's, so the origin is condemned and the
+	// request still arrives.
+	const { server, base } = await sseServer({ thinkMs: 1, firstTokenMs: 1, decodeMs: 1, chunks: 1, outputTokens: 1 });
+	const harness = createHarness({
+		providers: { alpha: { enabled: true, http2: true } },
+		allowInsecureH2c: true,
+		timing: true
+	});
+	try {
+		apply(harness.ctx);
+		const waterfall = harness.listeners.get("llm/stream")[0];
+		// The server above is http/1.1-only, and h2c is attempted first: undici's h2c
+		// upgrade against a plain http/1.1 server fails, the origin is condemned, and
+		// the same init goes out on the built-in transport.
+		const inner = readChatStream(base, { messages: [{ role: "user", content: "hi" }] });
+		const chunks = [];
+		for await (const chunk of waterfall({ provider: "alpha", model: "m", sessionId: "fallback" }, () => inner)) chunks.push(chunk);
+		assert.ok(chunks.some((chunk) => chunk.type === "text-delta"), "the request still produced tokens");
+		const [measured] = await timingsFor(harness, "fallback");
+		assert.equal(measured.protocol, null, "a fallback is not reported as h2");
+		assert.equal(measured.status, "complete");
+	} finally {
+		server.close();
+		harness.disposeAll();
+	}
+});
+
+test("measures a real request end to end from transport diagnostics", async () => {	const plan = { thinkMs: 60, firstTokenMs: 60, decodeMs: 120, chunks: 4, outputTokens: 40 };
 	const { server, base } = await sseServer(plan);
 	// No provider policy: timing must not depend on compression being enabled.
 	const harness = createHarness({});
@@ -600,6 +711,23 @@ test("reports the response content-encoding and counts wire bytes", async () => 
 		server.close();
 		harness.disposeAll();
 	}
+});
+
+test("reads the response encoding out of either header shape undici reports", () => {
+	// HTTP/1.1: a flat list of alternating names and values, not a map.
+	const h1 = [Buffer.from("content-type"), Buffer.from("text/event-stream"), Buffer.from("Content-Encoding"), Buffer.from("gzip")];
+	assert.equal(diagnosticHeader(h1, "content-encoding"), "gzip", "the list shape is walked, case-insensitively");
+	assert.equal(diagnosticHeader(h1, "content-length"), undefined, "an absent header is not invented");
+	// HTTP/2: a plain object, pseudo-headers included. Reading only the list shape
+	// does not fail here — it silently reports no encoding at all, which is why
+	// this is asserted rather than assumed.
+	const h2 = { ":status": 200, "content-type": "text/event-stream", "content-encoding": "br" };
+	assert.equal(diagnosticHeader(h2, "content-encoding"), "br", "the object shape is read too");
+	assert.equal(diagnosticHeader(h2, ":status"), "200", "a pseudo-header is a header like any other");
+	assert.equal(diagnosticHeader(h2, "content-length"), undefined);
+	// Anything else is not a header container, and must not throw.
+	assert.equal(diagnosticHeader(undefined, "content-encoding"), undefined);
+	assert.equal(diagnosticHeader(Buffer.from("nope"), "content-encoding"), undefined);
 });
 
 test("leaves the response encoding null when the gateway does not compress", async () => {

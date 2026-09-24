@@ -139,8 +139,10 @@ The card lives in **Settings → Plugins → Configuration**, collapsed like eve
 **One row per provider route**
 
 - **Toggle** — compress this provider's model requests.
-- **Minimum body size** — `1024`, not offered in the card. Smaller requests are sent as-is, and compression is skipped whenever it would not actually make the body smaller. Set it in `settings.yaml` if a gateway wants a different threshold.
 - **Algorithm** — **brotli at quality 9** by default, measured at roughly 5–15% smaller than gzip for a comparable amount of time. Brotli's own default is quality 11, which is deliberately not used: it costs about a second of *synchronous* CPU per megabyte, blocking the event loop, for only a few percent more. A request body has no negotiation, so if an endpoint answers a shape rejection (411/415/501) to a brotli body the request is retried as gzip — the adapter never sees a failure it would not have seen uncompressed — and that endpoint is remembered, so brotli is attempted there exactly once. Choose `gzip` to never attempt it.
+- **HTTP/2** — whether this provider's requests go out over HTTP/2. **On by default for a route that pre-transmits**, off until asked for otherwise.
+- **Pre-transmission** — see below.
+- **Minimum body size** — `1024`, not offered in the card. Smaller requests are sent as-is, and compression is skipped whenever it would not actually make the body smaller. Set it in `settings.yaml` if a gateway wants a different threshold.
 
 Routes that share one endpoint are grouped, and **each one is configured independently**: the plugin attributes every model call to the provider that issued it, and that provider's own switches decide. The endpoint only decides when a request cannot be attributed at all.
 
@@ -153,13 +155,35 @@ model-request-accelerator:
       enabled: true
       minBytes: 1024
       prewarm: true
+      http2: true
   encoding: auto
   prewarmHoldMs: 120000
   prewarmPoolSize: 3
+  http2: true
+  allowInsecureH2c: false
   timing: true
 ```
 
 `encoding` is `auto` (prefer **brotli**) or `gzip`, settable per provider or section-wide. In the card the choice is **per route**, in the table's 算法 column; the section value is what a route inherits until it sets its own.
+
+### HTTP/2 (on by default for a route that pre-transmits)
+
+**Set the expectation first**: this is not a switch that makes requests several times faster. In a real stored measurement a 2.37 MB request spends **1.1 ms** in `sendMs` and **3391 ms** in `serverMs` — the upload stopped being the bottleneck the moment compression and pre-transmission went in, and no protocol buys back the provider's thinking time. What it is worth is two things:
+
+1. **HPACK header compression.** Pre-transmission re-sends the *same* multi-kilobyte headers every step; HTTP/2 sends only the delta. That is the same idea as pre-transmission itself, applied to headers instead of the body.
+2. **Multiplexing.** The held pool of pre-transmitted requests shares one connection instead of contending for several, and no handshake is repeated.
+
+**Why it needs its own code.** Node's `globalThis.fetch` **speaks HTTP/1.1 only**: its dispatcher is the built-in undici's own `Agent`, undici negotiates h2 only when `allowH2` is *explicitly* passed, the built-in Agent does not pass it — and the built-in Agent class is not reachable from application code (`process.getBuiltinModule` does not resolve node's internal undici, and that specifier is not a public builtin). So the built-in transport has no knob to turn.
+
+What does work is a **consistent pair**: dsh's own `undici` package, driving its own `fetch` with its own `Agent({ allowH2: true })`. The two undici instances must never be crossed — handing an 8.x Agent to the built-in 7.x `fetch` fails at dispatch time with `invalid onRequestStart method` — which is the single rule `lib/transport.js` exists to enforce: **both halves from one module instance, or h2 stays off.**
+
+**Degradation is the protocol's own, not a retry state machine.** h2 is reached through ALPN, so an endpoint that does not offer it simply continues on http/1.1 through the same Agent — no error, and no signal to detect. All `lib/transport.js` handles is what ALPN cannot cover: a transport that fails outright, or an `http://` endpoint (which would need cleartext h2c, off by default — see below). One failure condemns that origin for the life of the plugin, so the cost of a bad endpoint is **one** extra round trip ever, not one per request.
+
+**The panel tells the truth, and the timing view does too.** A timing row carries an `h2` chip **only when the response really came back on h2**. This matters: undici announces `h2` on its connection diagnostic *before* a cleartext upgrade is proven, so an attempt the far end refuses also announces `h2` and then fails — treating "asked for h2" as "used h2" would label a failed request as h2. The plugin holds the negotiated version until the send has actually succeeded, and a test pins that. An endpoint that genuinely negotiates h2 says **nothing** in the settings card (there is nothing to report); an abandoned one says so. `test/transport.test.mjs` covers both, plus the origin check that keeps one host's negotiation off another host's row.
+
+**HTTP/3 is not available on this stack**, so this plugin does not offer it: undici contains **no** HTTP/3 or QUIC code, and Node 24.12 ships neither `nghttp3` nor `ngtcp2` (`node:quic` exists as a builtin but has no QUIC stack behind it). The only route would be a separate HTTP/3 client library with a hand-built transport, which would **lose every undici diagnostic** — the timing breakdown and the pre-transmission pool both rest on them. For a gateway that advertises only h2, that trade buys nothing.
+
+`allowInsecureH2c` defaults to `false`. With it on, an `http://` endpoint also uses HTTP/2, over a **cleartext h2c connection with no certificate**; enable it only when you trust that link.
 
 ### Pre-transmission (opt-in, per provider)
 
@@ -226,6 +250,7 @@ npm test
 - `test/client.test.mjs` executes the real browser bundle under a stubbed module loader and a hook-tracking React stand-in, so it can render the card, click it and re-render: that the bundle id matches the package name, that the card registers on the settings namespace and starts **collapsed**, that the timing switch writes a top-level field, and that the timing view is registered only while the preference is on — including that it stays undecided until the first section arrives and is added or removed as the preference changes.
 - `test/timing.test.mjs` drives the phase arithmetic with injected clocks, so every boundary is asserted at an exact millisecond, including the cases where a phase is genuinely absent.
 - `test/prewarm.test.mjs` covers the prefix scanner and the field reordering against bodies of both shapes, including the ones that must be refused.
+- `test/transport.test.mjs` covers the h2 decision and its fallback with both injection points faked, so none of it needs a network: the TLS/opt-in rules, one Agent per origin, the refusal to cross two undici instances, a failure condemning an origin exactly once, an abort *not* condemning it, and the announced-but-failed connection that must not be reported as a protocol.
 - `test/version.test.mjs` covers three-part comparison, including the cases a string comparison gets wrong and the ones that must not be read as an update.
 - `test/install.test.mjs` runs the installer against throwaway profiles, twice each, from a pristine patch layer, one that already has entries, an empty file and no file at all — pinning the case where an empty array must be replaced rather than appended to.
 
@@ -239,6 +264,7 @@ npm test
 | `lib/index.js` | Host half: settings section, `llm/stream` attribution, the timing measurement and its authenticated `/api` route, `globalThis.fetch` patch and restore. |
 | `lib/client.js` | Browser half: the settings card and the request-timing view. Plain CJS factory contract, no JSX or ESM syntax. |
 | `lib/prewarm.js` | Pre-transmission core: the shared-prefix scanner, the field reordering, and the body-shape checks. Pure, so it is unit-testable. |
+| `lib/transport.js` | The HTTP/2 transport: resolves one undici module instance, pairs its `fetch` with its own `allowH2` Agent, decides per request, and condemns an origin that failed. Optional by construction — with no undici resolvable, h2 is simply off. |
 | `lib/ledger.js` | The durable per-session store, built on the deployment's storage domain. |
 | `lib/version.js` | Three-part version parsing and comparison, which the update button reads. |
 | `scripts/probe-encodings.mjs` | Asks an endpoint which request encodings it decodes, before there is traffic to learn from. |
@@ -262,6 +288,7 @@ The plugin sits at `fetch`, so it only ever sees requests that go through it, an
 
 - **Signed bodies are left alone.** A request carrying `x-amz-content-sha256` (AWS-style signing) never has its body compressed: the signature covers the body's bytes, so compressing it would break the signature, and the resulting authorization failure is not a shape rejection — the fallback that recovers from a refused encoding would never trigger. Bedrock-style transports are out of scope for the same reason the reference implementation lists them as such.
 - **Transports that do not use `fetch`** — WebSocket, or an SDK with its own HTTP stack — are never seen at all.
+- **HTTP/3 is out of reach on this stack.** undici has no HTTP/3 or QUIC code, and Node 24.12 ships neither `nghttp3` nor `ngtcp2`, so there is nothing to drive it with — and a hand-built HTTP/3 transport would cost every undici diagnostic the timing view and the pre-transmission pool depend on. HTTP/2 is offered because it is a transport swap on the same diagnostics, not a replacement for them.
 - **Compression needs the far end to decode it.** gzip is near-universal; brotli is not. If an endpoint answers 411/415/501 to a compressed body the plugin retries it as gzip, remembers the endpoint, and gets out of the way; `scripts/probe-encodings.mjs` answers the same question up front, with a one-token request instead of a real conversation.
 - **The plugin can be slower than the wrapper, not faster.** It moves bytes off the critical path and shrinks them; it does not change what the model does with them.
 
