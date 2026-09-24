@@ -23,6 +23,14 @@ something a user can see has changed.
   simply stays on http/1.1 through the same Agent, with no error. What is left is a
   transport that fails outright — one failure condemns that origin for the life of the
   plugin, so the cost is one extra round trip ever rather than one per request.
+- **The protocol is remembered per origin, because undici reports it once per socket.**
+  `undici:client:connected` fires when a connection is *established*, so on a pooled
+  keep-alive connection only the request that opened it ever sees it — reading the
+  protocol from that event alone left every later row claiming nothing while the
+  requests really did travel over h2. It is now cached per origin for the life of the
+  connection, cleared when an origin's attempt fails (the announced version must still
+  be committed only after a send succeeds, since a refused cleartext upgrade announces
+  `h2` and then fails), and a fresh announcement still wins over the cached one.
 - **A fixed silent bug under h2.** undici hands HTTP/1.1 response headers over as a
   flat list but HTTP/2 ones as a plain object, and the reader only understood the
   list. Nothing failed loudly — the timing panel simply reported no `content-encoding`

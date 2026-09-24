@@ -267,3 +267,53 @@ test("resolves a copy of undici without being told where it is", async () => {
 	assert.equal(reachable, viaResolve, "the transport is available exactly when undici is resolvable from the plugin");
 	transport.dispose();
 });
+
+test("reports the protocol for every request on a reused connection, not just the first", async () => {
+	// `undici:client:connected` fires once per socket, so on a pooled keep-alive
+	// connection only the request that opened it ever sees it. Reading the protocol
+	// only from that event would leave every later row claiming nothing while the
+	// requests really do travel over h2 — which is exactly what the panel showed.
+	const fake = fakePair();
+	let announced = false;
+	const pair = {
+		...fake.pair,
+		fetch: async (url, init) => {
+			if (!announced) {
+				announced = true;
+				diagnosticsChannel.channel("undici:client:connected").publish({ connectParams: { hostname: "gw.example", protocol: "https:", port: "", version: "h2" } });
+			}
+			return fake.pair.fetch(url, init);
+		}
+	};
+	const transport = createTransport({ load: () => pair });
+	const perRequest = [];
+	for (let index = 0; index < 3; index += 1) {
+		const seen = [];
+		await transport.execute("https://gw.example/v1/chat/completions", { method: "POST", body: "{}" }, { onConnected: (protocol) => seen.push(protocol) });
+		perRequest.push(seen);
+	}
+	assert.deepEqual(perRequest, [["h2"], ["h2"], ["h2"]], "a reused connection keeps reporting the protocol it negotiated");
+	transport.dispose();
+});
+
+test("a failed attempt does not leave a protocol behind for the origin", async () => {
+	// The other half of the same rule: a cleartext upgrade announces `h2` and then
+	// fails, so nothing may be remembered from an attempt that never carried a request.
+	const fake = fakePair();
+	const pair = {
+		...fake.pair,
+		fetch: async () => {
+			diagnosticsChannel.channel("undici:client:connected").publish({ connectParams: { hostname: "gw.example", protocol: "https:", port: "", version: "h2" } });
+			const error = new Error("fetch failed");
+			error.cause = new Error("Protocol error");
+			throw error;
+		}
+	};
+	const transport = createTransport({ load: () => pair });
+	await transport.execute("https://gw.example/v1/chat/completions", { method: "POST", body: "{}" }, { onConnected: () => {} });
+	assert.equal(transport.isBlocked("https://gw.example"), true);
+	const seen = [];
+	await transport.execute("https://gw.example/v1/chat/completions", { method: "POST", body: "{}" }, { onConnected: (protocol) => seen.push(protocol) });
+	assert.deepEqual(seen, [], "a condemned origin reports no protocol, because it never used one");
+	transport.dispose();
+});
